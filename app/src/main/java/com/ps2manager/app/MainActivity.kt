@@ -19,8 +19,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import com.ps2manager.app.data.ArtType
 import com.ps2manager.app.data.GameFile
 import com.ps2manager.app.data.GameStatus
 import com.ps2manager.app.ui.LibraryViewModel
@@ -46,17 +49,66 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
+                var previewGame by remember { mutableStateOf<GameFile?>(null) }
+                var pendingReplaceType by remember { mutableStateOf<ArtType?>(null) }
+                val context = LocalContext.current
+
+                val imagePicker = rememberLauncherForActivityResult(
+                    ActivityResultContracts.GetContent()
+                ) { uri: Uri? ->
+                    val game = previewGame
+                    val type = pendingReplaceType
+                    if (uri != null && game != null && type != null) {
+                        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+                        val ext = if (mime.contains("png")) "png" else "jpg"
+                        if (bytes != null) {
+                            viewModel.replaceArt(game, type, bytes, ext)
+                        }
+                    }
+                    pendingReplaceType = null
+                }
+
                 LibraryScreen(
                     viewModel = viewModel,
-                    onPickFolder = { folderPicker.launch(null) }
+                    onPickFolder = { folderPicker.launch(null) },
+                    onStartPreview = { game -> viewModel.startPreview(game) },
+                    onPreviewReady = { game -> previewGame = game }
                 )
+
+                val liveGames by viewModel.games.collectAsState()
+                val activePreview = liveGames.find { it.documentId == previewGame?.documentId }
+                if (activePreview != null && activePreview.status == GameStatus.PREVIEW) {
+                    ArtPreviewDialog(
+                        game = activePreview,
+                        onReplaceArt = { type ->
+                            pendingReplaceType = type
+                            imagePicker.launch("image/*")
+                        },
+                        onSearch = { query -> viewModel.searchTitles(query) },
+                        onPickAlternate = { gameId -> viewModel.useArtFromGameId(activePreview, gameId) },
+                        onConfirm = {
+                            viewModel.confirmApply(activePreview)
+                            previewGame = null
+                        },
+                        onCancel = {
+                            viewModel.cancelPreview(activePreview)
+                            previewGame = null
+                        }
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-fun LibraryScreen(viewModel: LibraryViewModel, onPickFolder: () -> Unit) {
+fun LibraryScreen(
+    viewModel: LibraryViewModel,
+    onPickFolder: () -> Unit,
+    onStartPreview: (GameFile) -> Unit,
+    onPreviewReady: (GameFile) -> Unit
+) {
     val games by viewModel.games.collectAsState()
     val isScanning by viewModel.isScanning.collectAsState()
     val status by viewModel.statusMessage.collectAsState()
@@ -94,7 +146,13 @@ fun LibraryScreen(viewModel: LibraryViewModel, onPickFolder: () -> Unit) {
 
             LazyColumn {
                 items(games) { game ->
-                    GameRow(game = game, onApply = { viewModel.applyGame(game) })
+                    GameRow(
+                        game = game,
+                        onApply = {
+                            onPreviewReady(game)
+                            onStartPreview(game)
+                        }
+                    )
                     Divider()
                 }
             }
@@ -133,7 +191,7 @@ fun GameRow(game: GameFile, onApply: () -> Unit) {
                 style = MaterialTheme.typography.bodyLarge
             )
             Text(
-                game.gameId ?: "Unrecognized filename",
+                (game.gameId ?: "Unrecognized filename") + if (game.isUlGame) "  (UL)" else "",
                 style = MaterialTheme.typography.bodySmall
             )
             Text(statusLabel(game.status), style = MaterialTheme.typography.labelSmall)
@@ -145,10 +203,94 @@ fun GameRow(game: GameFile, onApply: () -> Unit) {
     }
 }
 
+@Composable
+fun ArtPreviewDialog(
+    game: GameFile,
+    onReplaceArt: (ArtType) -> Unit,
+    onSearch: (String) -> List<Pair<String, String>>,
+    onPickAlternate: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+
+    Dialog(onDismissRequest = onCancel) {
+        Surface(shape = RoundedCornerShape(12.dp)) {
+            Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                Text(
+                    game.matchedTitle ?: "Preview",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Spacer(Modifier.height(12.dp))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ArtThumb("Cover", game.artSet?.cover) { onReplaceArt(ArtType.COVER) }
+                    ArtThumb("Background", game.artSet?.background) { onReplaceArt(ArtType.BACKGROUND) }
+                    ArtThumb("Icon", game.artSet?.icon) { onReplaceArt(ArtType.ICON) }
+                    ArtThumb("Screenshot", game.artSet?.screenshot) { onReplaceArt(ArtType.SCREENSHOT) }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                Text("Not the right game? Search for a different title's art:", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = {
+                        searchQuery = it
+                        searchResults = onSearch(it)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("Type a game title...") }
+                )
+                searchResults.take(5).forEach { (id, title) ->
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 6.dp)
+                    )
+                    TextButton(onClick = { onPickAlternate(id) }) {
+                        Text("Use this game's art")
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onCancel) { Text("Cancel") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = onConfirm) { Text("Confirm & Apply") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ArtThumb(label: String, path: String?, onTap: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .size(64.dp)
+                .clip(RoundedCornerShape(6.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (path != null) {
+                AsyncImage(model = path, contentDescription = label, modifier = Modifier.size(64.dp))
+            } else {
+                Text("—")
+            }
+        }
+        TextButton(onClick = onTap) { Text(label, style = MaterialTheme.typography.labelSmall) }
+    }
+}
+
 private fun statusLabel(status: GameStatus): String = when (status) {
     GameStatus.PENDING -> "Pending"
     GameStatus.LOOKING_UP -> "Fetching title & art…"
     GameStatus.MATCHED -> "Match found — ready to apply"
+    GameStatus.PREVIEW -> "Reviewing art…"
     GameStatus.NO_MATCH -> "No match found in database"
     GameStatus.RENAMED -> "Renamed ✓"
     GameStatus.ERROR -> "Error — try again"
