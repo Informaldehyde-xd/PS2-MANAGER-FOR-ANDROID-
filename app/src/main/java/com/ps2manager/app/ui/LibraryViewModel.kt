@@ -4,6 +4,8 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ps2manager.app.data.ArtSet
+import com.ps2manager.app.data.ArtType
 import com.ps2manager.app.data.CoverArtFetcher
 import com.ps2manager.app.data.GameFile
 import com.ps2manager.app.data.GameRepository
@@ -63,7 +65,70 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    /** Downloads art (if missing), then renames the file and saves art onto the drive. */
+    fun startPreview(game: GameFile) {
+        val gameId = game.gameId ?: return
+        viewModelScope.launch {
+            updateGame(game.documentId) { it.copy(status = GameStatus.LOOKING_UP) }
+            val artSet = artFetcher.fetchAllArt(gameId)
+            updateGame(game.documentId) { it.copy(artSet = artSet, status = GameStatus.PREVIEW) }
+        }
+    }
+
+    fun cancelPreview(game: GameFile) {
+        updateGame(game.documentId) { it.copy(status = GameStatus.MATCHED) }
+    }
+
+    fun replaceArt(game: GameFile, type: ArtType, bytes: ByteArray, ext: String) {
+        val gameId = game.gameId ?: return
+        viewModelScope.launch {
+            val newPath = artFetcher.saveManualArt(gameId, type, bytes, ext)
+            updateGame(game.documentId) { g ->
+                val current = g.artSet ?: ArtSet()
+                val updated = when (type) {
+                    ArtType.COVER -> current.copy(cover = newPath)
+                    ArtType.BACKGROUND -> current.copy(background = newPath)
+                    ArtType.ICON -> current.copy(icon = newPath)
+                    ArtType.SCREENSHOT -> current.copy(screenshot = newPath)
+                }
+                g.copy(artSet = updated)
+            }
+        }
+    }
+
+    fun searchTitles(query: String): List<Pair<String, String>> = titleDb.searchTitles(query)
+
+    fun useArtFromGameId(game: GameFile, otherGameId: String) {
+        viewModelScope.launch {
+            val artSet = artFetcher.fetchAllArt(otherGameId)
+            updateGame(game.documentId) { it.copy(artSet = artSet) }
+        }
+    }
+
+    fun confirmApply(game: GameFile) {
+        val treeUri = selectedTreeUri ?: return
+        val gameId = game.gameId ?: return
+        val title = game.matchedTitle ?: return
+        val artSet = game.artSet ?: ArtSet()
+
+        viewModelScope.launch {
+            repository.saveArtSetToDrive(treeUri, gameId, artSet)
+
+            val renamed = if (game.isUlGame) {
+                repository.renameUlGame(treeUri, gameId, title)
+            } else {
+                val extension = game.displayName.substringAfterLast('.', "iso")
+                repository.renameFile(game.documentId, gameId, title, extension)
+            }
+
+            updateGame(game.documentId) {
+                it.copy(
+                    coverArtLocalPath = artSet.cover,
+                    status = if (renamed) GameStatus.RENAMED else GameStatus.ERROR
+                )
+            }
+        }
+    }
+
     fun applyGame(game: GameFile) {
         val treeUri = selectedTreeUri ?: return
         val gameId = game.gameId ?: return
@@ -72,11 +137,9 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             updateGame(game.documentId) { it.copy(status = GameStatus.LOOKING_UP) }
 
-            val artPath = artFetcher.fetchCoverArt(gameId)
-            if (artPath != null) {
-                repository.saveArtToDrive(treeUri, gameId, artPath)
-                updateGame(game.documentId) { it.copy(coverArtLocalPath = artPath) }
-            }
+            val artSet = artFetcher.fetchAllArt(gameId)
+            repository.saveArtSetToDrive(treeUri, gameId, artSet)
+            updateGame(game.documentId) { it.copy(artSet = artSet, coverArtLocalPath = artSet.cover) }
 
             val renamed = if (game.isUlGame) {
                 repository.renameUlGame(treeUri, gameId, title)
@@ -91,7 +154,6 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    /** Runs applyGame for every matched-but-not-yet-renamed game. */
     fun applyAllMatched() {
         viewModelScope.launch {
             _games.value.filter { it.status == GameStatus.MATCHED }.forEach { applyGame(it) }
