@@ -12,7 +12,6 @@ private val GAME_EXTENSIONS = setOf("iso")
 
 class GameRepository(private val context: Context) {
 
-    /** Recursively finds game files under the selected tree URI (DVD/CD/USB folder structure). */
     suspend fun scanFolder(treeUri: Uri): List<GameFile> = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext emptyList()
         val found = mutableListOf<GameFile>()
@@ -45,7 +44,6 @@ class GameRepository(private val context: Context) {
         }
     }
 
-    /** Finds ul.cfg at the root of the drive and lists the split-format (UL) games in it. */
     suspend fun scanUlGames(treeUri: Uri): List<GameFile> = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext emptyList()
         val cfgFile = root.findFile("ul.cfg") ?: return@withContext emptyList()
@@ -70,11 +68,6 @@ class GameRepository(private val context: Context) {
         }
     }
 
-    /**
-     * Renames a UL (split-format) game: updates its title in ul.cfg AND renames every
-     * physical part file to match, since OPL derives part filenames from a checksum
-     * of the title. Both must change together or OPL will no longer find the game.
-     */
     suspend fun renameUlGame(treeUri: Uri, gameId: String, newTitle: String): Boolean =
         withContext(Dispatchers.IO) {
             try {
@@ -89,7 +82,6 @@ class GameRepository(private val context: Context) {
                 if (index == -1) return@withContext false
                 val oldEntry = entries[index]
 
-                // Find the existing physical part files for this game, sorted by part number.
                 val gameIdEscaped = Regex.escape(gameId)
                 val partRegex = Regex("^ul\\.[0-9A-Fa-f]{8}\\.$gameIdEscaped\\.(\\d{2})$")
                 val existingParts = root.listFiles()
@@ -102,18 +94,14 @@ class GameRepository(private val context: Context) {
                     .sortedBy { it.first }
 
                 if (existingParts.size != oldEntry.parts) {
-                    // Physical files don't match what ul.cfg expects — bail out rather
-                    // than risk renaming the wrong things.
                     return@withContext false
                 }
 
-                // Rename every part file to use the new title's checksum.
                 for ((partNum, doc) in existingParts) {
                     val newName = UlConfig.partFileName(newTitle, gameId, partNum)
                     if (!doc.renameTo(newName)) return@withContext false
                 }
 
-                // Update the ul.cfg entry's title and write the whole file back.
                 entries[index] = oldEntry.copy(nameBytes = UlConfig.buildNameBytes(newTitle))
                 val newBytes = UlConfig.serialize(entries)
                 context.contentResolver.openOutputStream(cfgFile.uri)?.use { out ->
@@ -126,7 +114,6 @@ class GameRepository(private val context: Context) {
             }
         }
 
-    /** Renames a file on the drive to OPL's GameID.Title.ext convention. Returns true on success. */
     suspend fun renameFile(documentUriString: String, gameId: String, title: String, extension: String): Boolean =
         withContext(Dispatchers.IO) {
             try {
@@ -138,26 +125,33 @@ class GameRepository(private val context: Context) {
             }
         }
 
-    /**
-     * Saves a downloaded cover art file into an "ART" folder at the root of the selected
-     * drive, named the way OPL expects (GameID_COV.jpg).
-     */
-    suspend fun saveArtToDrive(treeUri: Uri, gameId: String, localArtPath: String): Boolean =
+    suspend fun saveArtSetToDrive(treeUri: Uri, gameId: String, artSet: ArtSet): Boolean =
         withContext(Dispatchers.IO) {
             try {
                 val root = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext false
                 val artDir = root.findFile("ART") ?: root.createDirectory("ART") ?: return@withContext false
 
-                val fileName = "${gameId}_COV.jpg"
-                artDir.findFile(fileName)?.delete()
-                val newFile = artDir.createFile("image/jpeg", fileName) ?: return@withContext false
+                var savedAny = false
+                for (type in ArtType.entries) {
+                    val localPath = artSet.pathFor(type) ?: continue
+                    val ext = localPath.substringAfterLast('.', type.defaultExt)
+                    val mime = if (ext == "png") "image/png" else "image/jpeg"
+                    val fileName = "$gameId${type.oplSuffix}.$ext"
 
-                context.contentResolver.openOutputStream(newFile.uri)?.use { out ->
-                    File(localArtPath).inputStream().use { input -> input.copyTo(out) }
+                    artDir.findFile(fileName)?.delete()
+                    val newFile = artDir.createFile(mime, fileName) ?: continue
+
+                    context.contentResolver.openOutputStream(newFile.uri)?.use { out ->
+                        File(localPath).inputStream().use { input -> input.copyTo(out) }
+                    }
+                    savedAny = true
                 }
-                true
+                savedAny
             } catch (e: Exception) {
                 false
             }
         }
+
+    suspend fun saveArtToDrive(treeUri: Uri, gameId: String, localArtPath: String): Boolean =
+        saveArtSetToDrive(treeUri, gameId, ArtSet(cover = localArtPath))
 }
