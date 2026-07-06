@@ -1,0 +1,153 @@
+package com.ps2manager.app
+
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import com.ps2manager.app.data.GameFile
+import com.ps2manager.app.data.GameStatus
+import com.ps2manager.app.ui.LibraryViewModel
+
+class MainActivity : ComponentActivity() {
+
+    private val viewModel: LibraryViewModel by viewModels()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val folderPicker = registerForActivityResult(
+            ActivityResultContracts.OpenDocumentTree()
+        ) { uri: Uri? ->
+            if (uri != null) {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+                viewModel.onFolderSelected(uri)
+            }
+        }
+
+        setContent {
+            MaterialTheme {
+                LibraryScreen(
+                    viewModel = viewModel,
+                    onPickFolder = { folderPicker.launch(null) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun LibraryScreen(viewModel: LibraryViewModel, onPickFolder: () -> Unit) {
+    val games by viewModel.games.collectAsState()
+    val isScanning by viewModel.isScanning.collectAsState()
+    val status by viewModel.statusMessage.collectAsState()
+
+    Scaffold(
+        topBar = {
+            TopAppBar(title = { Text("PS2 Manager") })
+        }
+    ) { padding ->
+        Column(modifier = Modifier.padding(padding).fillMaxSize().padding(16.dp)) {
+
+            Button(onClick = onPickFolder, modifier = Modifier.fillMaxWidth()) {
+                Text("Pick USB / HDD Folder")
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Text(status, style = MaterialTheme.typography.bodyMedium)
+
+            if (isScanning) {
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+
+            if (games.any { it.status == GameStatus.MATCHED }) {
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = { viewModel.applyAllMatched() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Rename + Fetch Art for All Matched")
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            LazyColumn {
+                items(games) { game ->
+                    GameRow(game = game, onApply = { viewModel.applyGame(game) })
+                    Divider()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun GameRow(game: GameFile, onApply: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (game.coverArtLocalPath != null) {
+            AsyncImage(
+                model = game.coverArtLocalPath,
+                contentDescription = null,
+                modifier = Modifier.size(56.dp).clip(RoundedCornerShape(6.dp))
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(6.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("?", style = MaterialTheme.typography.titleLarge)
+            }
+        }
+
+        Spacer(Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                game.matchedTitle ?: game.currentTitle ?: game.displayName,
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Text(
+                game.gameId ?: "Unrecognized filename",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(statusLabel(game.status), style = MaterialTheme.typography.labelSmall)
+        }
+
+        if (game.status == GameStatus.MATCHED) {
+            Button(onClick = onApply) { Text("Apply") }
+        }
+    }
+}
+
+private fun statusLabel(status: GameStatus): String = when (status) {
+    GameStatus.PENDING -> "Pending"
+    GameStatus.LOOKING_UP -> "Fetching title & art…"
+    GameStatus.MATCHED -> "Match found — ready to apply"
+    GameStatus.NO_MATCH -> "No match found in database"
+    GameStatus.RENAMED -> "Renamed ✓"
+    GameStatus.ERROR -> "Error — try again"
+}
