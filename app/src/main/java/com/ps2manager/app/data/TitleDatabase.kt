@@ -8,10 +8,6 @@ import okhttp3.Request
 import java.io.File
 import java.util.concurrent.TimeUnit
 
-/**
- * Title lookup backed by the archived OPL Manager GameArt Database CSV
- * (community mirror, best-effort — if the source ever moves, update BASE_URL below).
- */
 class TitleDatabase(private val context: Context) {
 
     companion object {
@@ -25,7 +21,6 @@ class TitleDatabase(private val context: Context) {
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    // gameId -> title
     private var idToTitle: Map<String, String> = emptyMap()
     private var loaded = false
 
@@ -54,7 +49,18 @@ class TitleDatabase(private val context: Context) {
 
     fun lookupTitle(gameId: String): String? = idToTitle[gameId.uppercase()]
 
-    /** Tolerant CSV parser: expects "GameID,Title" per line, quotes optional. */
+    /** Simple substring search over the loaded database, for manually picking an alternate match. */
+    fun searchTitles(query: String, limit: Int = 20): List<Pair<String, String>> {
+        if (query.isBlank()) return emptyList()
+        val q = query.trim().lowercase()
+        return idToTitle.entries
+            .asSequence()
+            .filter { it.value.lowercase().contains(q) }
+            .take(limit)
+            .map { it.key to it.value }
+            .toList()
+    }
+
     private fun parseCsv(text: String): Map<String, String> {
         if (text.isBlank()) return emptyMap()
         val map = HashMap<String, String>()
@@ -68,7 +74,6 @@ class TitleDatabase(private val context: Context) {
             if (title.startsWith("\"") && title.endsWith("\"") && title.length >= 2) {
                 title = title.substring(1, title.length - 1)
             }
-            // Skip header row if present
             if (id.equals("GAMEID", ignoreCase = true) || id.equals("ID", ignoreCase = true)) return@forEach
             if (id.isNotEmpty() && title.isNotEmpty()) {
                 map[id] = title
