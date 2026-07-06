@@ -36,7 +36,9 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             _isScanning.value = true
             _statusMessage.value = "Scanning drive for game files..."
-            val found = repository.scanFolder(treeUri)
+            val isoGames = repository.scanFolder(treeUri)
+            val ulGames = repository.scanUlGames(treeUri)
+            val found = isoGames + ulGames
             _games.value = found
             _statusMessage.value = "Found ${found.size} game file(s). Loading title database..."
 
@@ -76,8 +78,12 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 updateGame(game.documentId) { it.copy(coverArtLocalPath = artPath) }
             }
 
-            val extension = game.displayName.substringAfterLast('.', "iso")
-            val renamed = repository.renameFile(game.documentId, gameId, title, extension)
+            val renamed = if (game.isUlGame) {
+                repository.renameUlGame(treeUri, gameId, title)
+            } else {
+                val extension = game.displayName.substringAfterLast('.', "iso")
+                repository.renameFile(game.documentId, gameId, title, extension)
+            }
 
             updateGame(game.documentId) {
                 it.copy(status = if (renamed) GameStatus.RENAMED else GameStatus.ERROR)
