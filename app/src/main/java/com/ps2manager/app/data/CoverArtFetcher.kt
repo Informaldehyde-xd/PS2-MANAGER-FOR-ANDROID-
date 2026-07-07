@@ -110,13 +110,19 @@ class CoverArtFetcher(private val context: Context) {
     }
 
     /** Fetches every art type for a game; each field is null if that type wasn't found. */
-    suspend fun fetchAllArt(gameId: String): ArtSet = withContext(Dispatchers.IO) {
+    suspend fun fetchAllArt(gameId: String, onProgress: (label: String, step: Int, total: Int) -> Unit = { _, _, _ -> }): ArtSet = withContext(Dispatchers.IO) {
         ensureIndexLoaded()
+        val types = ArtType.entries.toList()
+        val results = mutableMapOf<ArtType, String?>()
+        types.forEachIndexed { index, type ->
+            onProgress(type.name.lowercase().replaceFirstChar { it.uppercase() }, index + 1, types.size)
+            results[type] = fetchArt(gameId, type)
+        }
         ArtSet(
-            cover = fetchArt(gameId, ArtType.COVER),
-            background = fetchArt(gameId, ArtType.BACKGROUND),
-            icon = fetchArt(gameId, ArtType.ICON),
-            screenshot = fetchArt(gameId, ArtType.SCREENSHOT)
+            cover = results[ArtType.COVER],
+            background = results[ArtType.BACKGROUND],
+            icon = results[ArtType.ICON],
+            screenshot = results[ArtType.SCREENSHOT]
         )
     }
 
