@@ -65,6 +65,27 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun renameOnly(game: GameFile) {
+        val treeUri = selectedTreeUri ?: return
+        val gameId = game.gameId ?: return
+        val title = game.matchedTitle ?: return
+
+        viewModelScope.launch {
+            updateGame(game.documentId) { it.copy(status = GameStatus.LOOKING_UP) }
+
+            val renamed = if (game.isUlGame) {
+                repository.renameUlGame(treeUri, gameId, title)
+            } else {
+                val extension = game.displayName.substringAfterLast('.', "iso")
+                repository.renameFile(game.documentId, gameId, title, extension)
+            }
+
+            updateGame(game.documentId) {
+                it.copy(status = if (renamed) GameStatus.RENAMED else GameStatus.ERROR)
+            }
+        }
+    }
+
     fun startPreview(game: GameFile) {
         val gameId = game.gameId ?: return
         viewModelScope.launch {
@@ -107,23 +128,14 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     fun confirmApply(game: GameFile) {
         val treeUri = selectedTreeUri ?: return
         val gameId = game.gameId ?: return
-        val title = game.matchedTitle ?: return
         val artSet = game.artSet ?: ArtSet()
 
         viewModelScope.launch {
-            repository.saveArtSetToDrive(treeUri, gameId, artSet)
-
-            val renamed = if (game.isUlGame) {
-                repository.renameUlGame(treeUri, gameId, title)
-            } else {
-                val extension = game.displayName.substringAfterLast('.', "iso")
-                repository.renameFile(game.documentId, gameId, title, extension)
-            }
-
+            val saved = repository.saveArtSetToDrive(treeUri, gameId, artSet)
             updateGame(game.documentId) {
                 it.copy(
                     coverArtLocalPath = artSet.cover,
-                    status = if (renamed) GameStatus.RENAMED else GameStatus.ERROR
+                    status = if (saved) GameStatus.MATCHED else GameStatus.ERROR
                 )
             }
         }
