@@ -31,6 +31,9 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     private val _statusMessage = MutableStateFlow("Pick your USB/HDD folder to get started.")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
 
+    private val _artFetchProgress = MutableStateFlow<String?>(null)
+    val artFetchProgress: StateFlow<String?> = _artFetchProgress.asStateFlow()
+
     private var selectedTreeUri: Uri? = null
 
     fun onFolderSelected(treeUri: Uri) {
@@ -104,19 +107,25 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /** Step 1 of applying a single game: fetch all art types and show them for review. */
     fun startPreview(game: GameFile) {
         val gameId = game.gameId ?: return
         viewModelScope.launch {
             updateGame(game.documentId) { it.copy(status = GameStatus.LOOKING_UP) }
-            val artSet = artFetcher.fetchAllArt(gameId)
+            val artSet = artFetcher.fetchAllArt(gameId) { label, step, total ->
+                _artFetchProgress.value = "Downloading $label art… ($step of $total)"
+            }
+            _artFetchProgress.value = null
             updateGame(game.documentId) { it.copy(artSet = artSet, status = GameStatus.PREVIEW) }
         }
     }
 
+    /** Cancels a preview without writing anything to the drive. */
     fun cancelPreview(game: GameFile) {
         updateGame(game.documentId) { it.copy(status = GameStatus.MATCHED) }
     }
 
+    /** Replaces one art type with a user-picked image while still in preview. */
     fun replaceArt(game: GameFile, type: ArtType, bytes: ByteArray, ext: String) {
         val gameId = game.gameId ?: return
         viewModelScope.launch {
@@ -134,8 +143,10 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /** Searches the loaded title database, e.g. to find a different game's art to borrow. */
     fun searchTitles(query: String): List<Pair<String, String>> = titleDb.searchTitles(query)
 
+    /** Loads a different Game ID's art into the current preview (e.g. after a manual search). */
     fun useArtFromGameId(game: GameFile, otherGameId: String) {
         viewModelScope.launch {
             val artSet = artFetcher.fetchAllArt(otherGameId)
@@ -143,6 +154,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /** Step 2: writes the (possibly edited) art set to the drive. Renaming is a separate action now. */
     fun confirmApply(game: GameFile) {
         val treeUri = selectedTreeUri ?: return
         val gameId = game.gameId ?: return
@@ -159,6 +171,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /** Downloads art (if missing), then renames the file and saves art onto the drive — no preview, used for batch apply. */
     fun applyGame(game: GameFile) {
         val treeUri = selectedTreeUri ?: return
         val gameId = game.gameId ?: return
@@ -167,7 +180,10 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             updateGame(game.documentId) { it.copy(status = GameStatus.LOOKING_UP) }
 
-            val artSet = artFetcher.fetchAllArt(gameId)
+            val artSet = artFetcher.fetchAllArt(gameId) { label, step, total ->
+                _artFetchProgress.value = "${game.matchedTitle ?: gameId}: downloading $label art… ($step of $total)"
+            }
+            _artFetchProgress.value = null
             repository.saveArtSetToDrive(treeUri, gameId, artSet)
             updateGame(game.documentId) { it.copy(artSet = artSet, coverArtLocalPath = artSet.cover) }
 
@@ -184,6 +200,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /** Runs applyGame for every matched-but-not-yet-renamed game. */
     fun applyAllMatched() {
         viewModelScope.launch {
             _games.value.filter { it.status == GameStatus.MATCHED }.forEach { applyGame(it) }
