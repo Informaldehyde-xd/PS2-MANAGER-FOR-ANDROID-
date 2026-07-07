@@ -72,7 +72,8 @@ class MainActivity : ComponentActivity() {
                 LibraryScreen(
                     viewModel = viewModel,
                     onPickFolder = { folderPicker.launch(null) },
-                    onStartPreview = { game -> viewModel.startPreview(game) },
+                    onRename = { game -> viewModel.renameOnly(game) },
+                    onStartArtPreview = { game -> viewModel.startPreview(game) },
                     onPreviewReady = { game -> previewGame = game }
                 )
 
@@ -106,7 +107,8 @@ class MainActivity : ComponentActivity() {
 fun LibraryScreen(
     viewModel: LibraryViewModel,
     onPickFolder: () -> Unit,
-    onStartPreview: (GameFile) -> Unit,
+    onRename: (GameFile) -> Unit,
+    onStartArtPreview: (GameFile) -> Unit,
     onPreviewReady: (GameFile) -> Unit
 ) {
     val games by viewModel.games.collectAsState()
@@ -148,9 +150,10 @@ fun LibraryScreen(
                 items(games) { game ->
                     GameRow(
                         game = game,
-                        onApply = {
+                        onRename = { onRename(game) },
+                        onCoverArt = {
                             onPreviewReady(game)
-                            onStartPreview(game)
+                            onStartArtPreview(game)
                         }
                     )
                     Divider()
@@ -161,7 +164,7 @@ fun LibraryScreen(
 }
 
 @Composable
-fun GameRow(game: GameFile, onApply: () -> Unit) {
+fun GameRow(game: GameFile, onRename: () -> Unit, onCoverArt: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -198,7 +201,10 @@ fun GameRow(game: GameFile, onApply: () -> Unit) {
         }
 
         if (game.status == GameStatus.MATCHED) {
-            Button(onClick = onApply) { Text("Apply") }
+            Column {
+                Button(onClick = onRename, modifier = Modifier.padding(bottom = 4.dp)) { Text("Rename") }
+                OutlinedButton(onClick = onCoverArt) { Text("Cover Art") }
+            }
         }
     }
 }
@@ -260,7 +266,7 @@ fun ArtPreviewDialog(
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onCancel) { Text("Cancel") }
                     Spacer(Modifier.width(8.dp))
-                    Button(onClick = onConfirm) { Text("Confirm & Apply") }
+                    Button(onClick = onConfirm) { Text("Save Cover Art") }
                 }
             }
         }
