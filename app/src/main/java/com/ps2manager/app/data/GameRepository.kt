@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.ps2manager.app.util.GameIdUtil
+import com.ps2manager.app.util.IsoSystemCnfReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -28,7 +29,10 @@ class GameRepository(private val context: Context) {
                 val name = child.name ?: continue
                 val ext = name.substringAfterLast('.', "").lowercase()
                 if (ext in GAME_EXTENSIONS) {
-                    val gameId = GameIdUtil.extractGameId(name)
+                    var gameId = GameIdUtil.extractGameId(name)
+                    if (gameId == null) {
+                        gameId = IsoSystemCnfReader.readGameId(context, child.uri)
+                    }
                     val existingTitle = GameIdUtil.extractExistingTitle(name, gameId)
                     out.add(
                         GameFile(
