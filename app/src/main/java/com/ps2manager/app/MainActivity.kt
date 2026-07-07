@@ -101,7 +101,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val liveGames by viewModel.games.collectAsState()
+                val artFetchProgress by viewModel.artFetchProgress.collectAsState()
                 val activePreview = liveGames.find { it.documentId == previewGame?.documentId }
+
+                if (activePreview != null && activePreview.status == GameStatus.LOOKING_UP) {
+                    ArtLoadingDialog(progressLabel = artFetchProgress)
+                }
+
                 if (activePreview != null && activePreview.status == GameStatus.PREVIEW) {
                     ArtPreviewDialog(
                         game = activePreview,
@@ -325,6 +331,32 @@ fun GameRow(game: GameFile, onRename: () -> Unit, onCoverArt: () -> Unit, onTap:
 }
 
 @Composable
+fun ArtLoadingDialog(progressLabel: String?) {
+    Dialog(onDismissRequest = {}) {
+        Surface(shape = RoundedCornerShape(12.dp)) {
+            Column(
+                modifier = Modifier.padding(24.dp).fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Fetching Cover Art", style = MaterialTheme.typography.titleMedium, color = Ps2Accent)
+                Spacer(Modifier.height(16.dp))
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Ps2Accent,
+                    trackColor = Ps2SurfaceElevated
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    progressLabel ?: "Contacting online database…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Ps2OnSurfaceMuted
+                )
+            }
+        }
+    }
+}
+
+@Composable
 fun ArtPreviewDialog(
     game: GameFile,
     onReplaceArt: (ArtType) -> Unit,
@@ -471,8 +503,4 @@ private fun statusLabel(status: GameStatus): String = when (status) {
     GameStatus.PENDING -> "Pending"
     GameStatus.LOOKING_UP -> "Fetching title & art…"
     GameStatus.MATCHED -> "Match found — ready to apply"
-    GameStatus.PREVIEW -> "Reviewing art…"
-    GameStatus.NO_MATCH -> "No match found in database"
-    GameStatus.RENAMED -> "Renamed ✓"
-    GameStatus.ERROR -> "Error — try again"
-}
+    GameStatus.PREVIEW -> "
