@@ -503,4 +503,8 @@ private fun statusLabel(status: GameStatus): String = when (status) {
     GameStatus.PENDING -> "Pending"
     GameStatus.LOOKING_UP -> "Fetching title & art…"
     GameStatus.MATCHED -> "Match found — ready to apply"
-    GameStatus.PREVIEW -> "
+    GameStatus.PREVIEW -> "Reviewing art…"
+    GameStatus.NO_MATCH -> "No match found in database"
+    GameStatus.RENAMED -> "Renamed ✓"
+    GameStatus.ERROR -> "Error — try again"
+}
