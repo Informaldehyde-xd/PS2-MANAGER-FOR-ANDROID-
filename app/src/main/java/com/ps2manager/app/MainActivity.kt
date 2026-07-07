@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -51,6 +52,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 var previewGame by remember { mutableStateOf<GameFile?>(null) }
                 var pendingReplaceType by remember { mutableStateOf<ArtType?>(null) }
+                var titleEditGame by remember { mutableStateOf<GameFile?>(null) }
                 val context = LocalContext.current
 
                 val imagePicker = rememberLauncherForActivityResult(
@@ -74,8 +76,21 @@ class MainActivity : ComponentActivity() {
                     onPickFolder = { folderPicker.launch(null) },
                     onRename = { game -> viewModel.renameOnly(game) },
                     onStartArtPreview = { game -> viewModel.startPreview(game) },
-                    onPreviewReady = { game -> previewGame = game }
+                    onPreviewReady = { game -> previewGame = game },
+                    onEditTitle = { game -> titleEditGame = game }
                 )
+
+                if (titleEditGame != null) {
+                    TitleEditDialog(
+                        game = titleEditGame!!,
+                        onSearch = { query -> viewModel.searchTitles(query) },
+                        onSave = { title ->
+                            viewModel.setManualTitle(titleEditGame!!, title)
+                            titleEditGame = null
+                        },
+                        onCancel = { titleEditGame = null }
+                    )
+                }
 
                 val liveGames by viewModel.games.collectAsState()
                 val activePreview = liveGames.find { it.documentId == previewGame?.documentId }
@@ -109,7 +124,8 @@ fun LibraryScreen(
     onPickFolder: () -> Unit,
     onRename: (GameFile) -> Unit,
     onStartArtPreview: (GameFile) -> Unit,
-    onPreviewReady: (GameFile) -> Unit
+    onPreviewReady: (GameFile) -> Unit,
+    onEditTitle: (GameFile) -> Unit
 ) {
     val games by viewModel.games.collectAsState()
     val isScanning by viewModel.isScanning.collectAsState()
@@ -154,7 +170,8 @@ fun LibraryScreen(
                         onCoverArt = {
                             onPreviewReady(game)
                             onStartArtPreview(game)
-                        }
+                        },
+                        onTap = { onEditTitle(game) }
                     )
                     Divider()
                 }
@@ -164,9 +181,12 @@ fun LibraryScreen(
 }
 
 @Composable
-fun GameRow(game: GameFile, onRename: () -> Unit, onCoverArt: () -> Unit) {
+fun GameRow(game: GameFile, onRename: () -> Unit, onCoverArt: () -> Unit, onTap: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+            .clickable { onTap() },
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (game.coverArtLocalPath != null) {
@@ -289,6 +309,55 @@ fun ArtThumb(label: String, path: String?, onTap: () -> Unit) {
             }
         }
         TextButton(onClick = onTap) { Text(label, style = MaterialTheme.typography.labelSmall) }
+    }
+}
+
+@Composable
+fun TitleEditDialog(
+    game: GameFile,
+    onSearch: (String) -> List<Pair<String, String>>,
+    onSave: (String) -> Unit,
+    onCancel: () -> Unit
+) {
+    var text by remember { mutableStateOf(game.matchedTitle ?: game.currentTitle ?: "") }
+    var results by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+
+    Dialog(onDismissRequest = onCancel) {
+        Surface(shape = RoundedCornerShape(12.dp)) {
+            Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                Text("Set Title", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(4.dp))
+                Text(game.gameId ?: "Unrecognized", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = {
+                        text = it
+                        results = onSearch(it)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("Type or search a title...") }
+                )
+
+                results.take(6).forEach { (_, title) ->
+                    TextButton(
+                        onClick = { text = title; results = emptyList() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(title, modifier = Modifier.fillMaxWidth())
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onCancel) { Text("Cancel") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = { onSave(text) }, enabled = text.isNotBlank()) { Text("Save Title") }
+                }
+            }
+        }
     }
 }
 
