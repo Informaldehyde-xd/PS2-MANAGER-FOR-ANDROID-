@@ -45,7 +45,14 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             _statusMessage.value = "Found ${found.size} game file(s). Loading title database..."
 
             titleDb.ensureLoaded()
-            _statusMessage.value = "Matching titles..."
+
+            if (titleDb.entryCount == 0) {
+                _statusMessage.value = "Couldn't load the online title database: " +
+                    (titleDb.lastError ?: "unknown error") +
+                    " — you can still set titles manually below."
+            } else {
+                _statusMessage.value = "Matching titles..."
+            }
 
             val updated = found.map { game ->
                 if (game.gameId == null) {
@@ -61,10 +68,21 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             }
             _games.value = updated
             _isScanning.value = false
-            _statusMessage.value = "Done. ${updated.count { it.status == GameStatus.MATCHED }} of ${updated.size} matched."
+            _statusMessage.value = if (titleDb.entryCount == 0) {
+                "Online database unreachable (${titleDb.lastError ?: "unknown error"}). Tap any game below to set its title manually."
+            } else {
+                "Done. ${updated.count { it.status == GameStatus.MATCHED }} of ${updated.size} matched."
+            }
         }
     }
 
+    /** Manually sets a game's title (typed or picked from search), enabling Rename/Cover Art regardless of auto-match. */
+    fun setManualTitle(game: GameFile, title: String) {
+        if (title.isBlank()) return
+        updateGame(game.documentId) { it.copy(matchedTitle = title, status = GameStatus.MATCHED) }
+    }
+
+    /** Renames the game using its matched title, without touching cover art at all. */
     fun renameOnly(game: GameFile) {
         val treeUri = selectedTreeUri ?: return
         val gameId = game.gameId ?: return
