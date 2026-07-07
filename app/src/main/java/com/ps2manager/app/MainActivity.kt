@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,7 +21,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
@@ -28,6 +31,11 @@ import com.ps2manager.app.data.ArtType
 import com.ps2manager.app.data.GameFile
 import com.ps2manager.app.data.GameStatus
 import com.ps2manager.app.ui.LibraryViewModel
+import com.ps2manager.app.ui.theme.Ps2Accent
+import com.ps2manager.app.ui.theme.Ps2ManagerTheme
+import com.ps2manager.app.ui.theme.Ps2OnSurfaceMuted
+import com.ps2manager.app.ui.theme.Ps2Primary
+import com.ps2manager.app.ui.theme.Ps2SurfaceElevated
 
 class MainActivity : ComponentActivity() {
 
@@ -49,7 +57,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
+            Ps2ManagerTheme {
                 var previewGame by remember { mutableStateOf<GameFile?>(null) }
                 var pendingReplaceType by remember { mutableStateOf<ArtType?>(null) }
                 var titleEditGame by remember { mutableStateOf<GameFile?>(null) }
@@ -133,50 +141,127 @@ fun LibraryScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("PS2 Manager") })
-        }
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            "PS2 MANAGER",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = Ps2Accent
+                        )
+                        Text(
+                            "Library & Cover Art Manager",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Ps2OnSurfaceMuted
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Ps2SurfaceElevated,
+                    titleContentColor = Ps2Accent
+                )
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.background
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize().padding(16.dp)) {
-
-            Button(onClick = onPickFolder, modifier = Modifier.fillMaxWidth()) {
-                Text("Pick USB / HDD Folder")
-            }
-
-            Spacer(Modifier.height(8.dp))
-            Text(status, style = MaterialTheme.typography.bodyMedium)
-
-            if (isScanning) {
-                Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
-
-            if (games.any { it.status == GameStatus.MATCHED }) {
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { viewModel.applyAllMatched() },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Rename + Fetch Art for All Matched")
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            LazyColumn {
-                items(games) { game ->
-                    GameRow(
-                        game = game,
-                        onRename = { onRename(game) },
-                        onCoverArt = {
-                            onPreviewReady(game)
-                            onStartArtPreview(game)
-                        },
-                        onTap = { onEditTitle(game) }
+        Box(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(MaterialTheme.colorScheme.background, Ps2SurfaceElevated.copy(alpha = 0.35f))
                     )
-                    Divider()
+                )
+        ) {
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+
+                Button(
+                    onClick = onPickFolder,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Ps2Primary)
+                ) {
+                    Text("PICK USB / HDD FOLDER", style = MaterialTheme.typography.labelLarge)
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Text(status, style = MaterialTheme.typography.bodyMedium, color = Ps2OnSurfaceMuted)
+
+                if (isScanning) {
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Ps2Accent,
+                        trackColor = Ps2SurfaceElevated
+                    )
+                }
+
+                if (games.any { it.status == GameStatus.MATCHED }) {
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = { viewModel.applyAllMatched() },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Ps2SurfaceElevated)
+                    ) {
+                        Text("Rename + Fetch Art for All Matched", color = Ps2Accent)
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                if (games.isEmpty()) {
+                    EmptyLibraryPlaceholder()
+                } else {
+                    LazyColumn {
+                        items(games) { game ->
+                            GameRow(
+                                game = game,
+                                onRename = { onRename(game) },
+                                onCoverArt = {
+                                    onPreviewReady(game)
+                                    onStartArtPreview(game)
+                                },
+                                onTap = { onEditTitle(game) }
+                            )
+                            Divider(color = Ps2SurfaceElevated)
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+fun EmptyLibraryPlaceholder() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(96.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(Ps2SurfaceElevated),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("💿", style = MaterialTheme.typography.displayMedium)
+        }
+        Spacer(Modifier.height(20.dp))
+        Text(
+            "No drive connected yet",
+            style = MaterialTheme.typography.titleMedium,
+            color = Ps2Accent
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Plug in your USB/HDD with an OTG adapter, then tap\n\"Pick USB / HDD Folder\" above to load your library.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Ps2OnSurfaceMuted,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
@@ -185,8 +270,11 @@ fun GameRow(game: GameFile, onRename: () -> Unit, onCoverArt: () -> Unit, onTap:
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp)
-            .clickable { onTap() },
+            .padding(vertical = 6.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Ps2SurfaceElevated.copy(alpha = 0.5f))
+            .clickable { onTap() }
+            .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (game.coverArtLocalPath != null) {
@@ -199,10 +287,11 @@ fun GameRow(game: GameFile, onRename: () -> Unit, onCoverArt: () -> Unit, onTap:
             Box(
                 modifier = Modifier
                     .size(56.dp)
-                    .clip(RoundedCornerShape(6.dp)),
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Ps2SurfaceElevated),
                 contentAlignment = Alignment.Center
             ) {
-                Text("?", style = MaterialTheme.typography.titleLarge)
+                Text("💿", style = MaterialTheme.typography.titleMedium)
             }
         }
 
@@ -211,18 +300,24 @@ fun GameRow(game: GameFile, onRename: () -> Unit, onCoverArt: () -> Unit, onTap:
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 game.matchedTitle ?: game.currentTitle ?: game.displayName,
-                style = MaterialTheme.typography.bodyLarge
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onBackground
             )
             Text(
                 (game.gameId ?: "Unrecognized filename") + if (game.isUlGame) "  (UL)" else "",
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodySmall,
+                color = Ps2OnSurfaceMuted
             )
-            Text(statusLabel(game.status), style = MaterialTheme.typography.labelSmall)
+            Text(statusLabel(game.status), style = MaterialTheme.typography.labelSmall, color = Ps2Accent)
         }
 
         if (game.status == GameStatus.MATCHED) {
             Column {
-                Button(onClick = onRename, modifier = Modifier.padding(bottom = 4.dp)) { Text("Rename") }
+                Button(
+                    onClick = onRename,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Ps2Primary)
+                ) { Text("Rename") }
                 OutlinedButton(onClick = onCoverArt) { Text("Cover Art") }
             }
         }
