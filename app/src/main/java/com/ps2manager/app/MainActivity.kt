@@ -257,6 +257,17 @@ fun ArtPreviewDialog(
                     ArtThumb("Screenshot", game.artSet?.screenshot) { onReplaceArt(ArtType.SCREENSHOT) }
                 }
 
+                val noArtFound = game.artSet != null &&
+                    game.artSet?.cover == null && game.artSet?.background == null &&
+                    game.artSet?.icon == null && game.artSet?.screenshot == null
+                if (noArtFound) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "No art found online for this game. Tap a box above to add your own photo.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
                 Spacer(Modifier.height(16.dp))
                 Text("Not the right game? Search for a different title's art:", style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(
