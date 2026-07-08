@@ -11,6 +11,7 @@ import com.ps2manager.app.data.GameFile
 import com.ps2manager.app.data.GameRepository
 import com.ps2manager.app.data.GameStatus
 import com.ps2manager.app.data.TitleDatabase
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +36,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     val artFetchProgress: StateFlow<String?> = _artFetchProgress.asStateFlow()
 
     private var selectedTreeUri: Uri? = null
+    private var previewJob: Job? = null
 
     fun onFolderSelected(treeUri: Uri) {
         selectedTreeUri = treeUri
@@ -110,14 +112,21 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     /** Step 1 of applying a single game: fetch all art types and show them for review. */
     fun startPreview(game: GameFile) {
         val gameId = game.gameId ?: return
-        viewModelScope.launch {
+        previewJob = viewModelScope.launch {
             updateGame(game.documentId) { it.copy(status = GameStatus.LOOKING_UP) }
-            val artSet = artFetcher.fetchAllArt(gameId) { label, step, total ->
-                _artFetchProgress.value = "Downloading $label art… ($step of $total)"
+            val artSet = artFetcher.fetchAllArt(gameId) { label, fileName, step, total ->
+                _artFetchProgress.value = "($step of $total) $label: $fileName"
             }
             _artFetchProgress.value = null
             updateGame(game.documentId) { it.copy(artSet = artSet, status = GameStatus.PREVIEW) }
         }
+    }
+
+    /** Cancels an in-progress art fetch (e.g. stuck on a slow connection) and returns to MATCHED. */
+    fun cancelArtFetch(game: GameFile) {
+        previewJob?.cancel()
+        _artFetchProgress.value = null
+        updateGame(game.documentId) { it.copy(status = GameStatus.MATCHED) }
     }
 
     /** Cancels a preview without writing anything to the drive. */
@@ -180,8 +189,8 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             updateGame(game.documentId) { it.copy(status = GameStatus.LOOKING_UP) }
 
-            val artSet = artFetcher.fetchAllArt(gameId) { label, step, total ->
-                _artFetchProgress.value = "${game.matchedTitle ?: gameId}: downloading $label art… ($step of $total)"
+            val artSet = artFetcher.fetchAllArt(gameId) { label, fileName, step, total ->
+                _artFetchProgress.value = "${game.matchedTitle ?: gameId}: ($step of $total) $label: $fileName"
             }
             _artFetchProgress.value = null
             repository.saveArtSetToDrive(treeUri, gameId, artSet)
