@@ -40,7 +40,8 @@ class GameRepository(private val context: Context) {
                             displayName = name,
                             gameId = gameId,
                             currentTitle = null,
-                            sizeBytes = child.length()
+                            sizeBytes = child.length(),
+                            parentDocumentId = dir.uri.toString()
                         )
                     )
                 }
@@ -134,8 +135,21 @@ class GameRepository(private val context: Context) {
             }
         }
 
-    /** Renames a file on the drive to OPL's GameID.Title.ext convention. Returns (success, errorMessage). */
-    suspend fun renameFile(documentUriString: String, gameId: String, title: String, extension: String): Pair<Boolean, String?> =
+    /**
+     * Renames a file on the drive to OPL's GameID.Title.ext convention. Returns (success, errorMessage).
+     *
+     * Some USB/HDD storage providers (notably many FAT32/exFAT SAF providers) don't support the
+     * rename operation at all and throw UnsupportedOperationException from DocumentsContract.
+     * When that happens, fall back to copying the file to a new name in the same folder and
+     * deleting the original, which works everywhere since it only needs create+write+delete.
+     */
+    suspend fun renameFile(
+        documentUriString: String,
+        gameId: String,
+        title: String,
+        extension: String,
+        parentDocumentId: String? = null
+    ): Pair<Boolean, String?> =
         withContext(Dispatchers.IO) {
             try {
                 val doc = DocumentFile.fromSingleUri(context, Uri.parse(documentUriString))
@@ -144,8 +158,38 @@ class GameRepository(private val context: Context) {
                     return@withContext false to "File no longer exists at that location."
                 }
                 val newName = GameIdUtil.buildOplFilename(gameId, title, extension)
-                val ok = doc.renameTo(newName)
-                if (ok) true to null else false to "The system refused the rename (name may already exist, or storage denied write access)."
+
+                val renamedDirectly = try {
+                    doc.renameTo(newName)
+                } catch (e: UnsupportedOperationException) {
+                    false
+                }
+                if (renamedDirectly) return@withContext true to null
+
+                // Direct rename isn't supported by this storage provider — fall back to copy + delete.
+                if (parentDocumentId == null) {
+                    return@withContext false to "This drive's storage provider doesn't support renaming, and no folder reference was available for a copy-based rename."
+                }
+                val parent = DocumentFile.fromTreeUri(context, Uri.parse(parentDocumentId))
+                    ?: return@withContext false to "Could not access the containing folder (try re-picking the folder)."
+
+                parent.findFile(newName)?.let { existing ->
+                    if (existing.uri != doc.uri) existing.delete()
+                }
+                val mime = doc.type ?: "application/octet-stream"
+                val newFile = parent.createFile(mime, newName)
+                    ?: return@withContext false to "Could not create the renamed file in the containing folder."
+
+                context.contentResolver.openInputStream(doc.uri)?.use { input ->
+                    context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
+                        input.copyTo(output)
+                    } ?: return@withContext false to "Could not write the new file."
+                } ?: return@withContext false to "Could not read the original file to copy it."
+
+                if (!doc.delete()) {
+                    return@withContext false to "Copied to the new name, but couldn't delete the original — you may have a duplicate now."
+                }
+                true to null
             } catch (e: Exception) {
                 false to (e.message ?: e.javaClass.simpleName)
             }
