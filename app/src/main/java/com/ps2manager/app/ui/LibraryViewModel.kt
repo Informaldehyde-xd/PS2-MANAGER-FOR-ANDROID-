@@ -100,7 +100,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 repository.renameUlGame(treeUri, gameId, title)
             } else {
                 val extension = game.displayName.substringAfterLast('.', "iso")
-                repository.renameFile(game.documentId, gameId, title, extension)
+                repository.renameFile(game.documentId, gameId, title, extension, game.parentDocumentId)
             }
 
             updateGame(game.documentId) {
@@ -200,7 +200,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 repository.renameUlGame(treeUri, gameId, title)
             } else {
                 val extension = game.displayName.substringAfterLast('.', "iso")
-                repository.renameFile(game.documentId, gameId, title, extension)
+                repository.renameFile(game.documentId, gameId, title, extension, game.parentDocumentId)
             }
 
             updateGame(game.documentId) {
