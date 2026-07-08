@@ -315,6 +315,13 @@ fun GameRow(game: GameFile, onRename: () -> Unit, onCoverArt: () -> Unit, onTap:
                 color = Ps2OnSurfaceMuted
             )
             Text(statusLabel(game.status), style = MaterialTheme.typography.labelSmall, color = Ps2Accent)
+            if (game.status == GameStatus.ERROR && game.lastError != null) {
+                Text(
+                    game.lastError!!,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
         }
 
         if (game.status == GameStatus.MATCHED) {
