@@ -305,7 +305,7 @@ fun GameRow(game: GameFile, onRename: () -> Unit, onCoverArt: () -> Unit, onTap:
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                game.matchedTitle ?: game.currentTitle ?: game.displayName,
+                game.matchedTitle ?: game.currentTitle ?: game.displayName.substringBeforeLast('.', game.displayName),
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onBackground
             )
