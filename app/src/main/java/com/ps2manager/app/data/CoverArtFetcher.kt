@@ -3,6 +3,7 @@ package com.ps2manager.app.data
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -32,14 +33,17 @@ data class ArtSet(
 }
 
 /**
- * Cover art comes from the archived OPL Manager GameArt Database on GitHub.
- * Rather than guessing the folder/filename pattern, this asks GitHub's API for
- * the real, complete file listing of the repo once, caches it, and matches
- * each Game ID against actual filenames that exist.
+ * Cover art comes from two sources:
+ *  1. Front covers: xlenore/ps2-covers on GitHub — a direct, verified, single-file-per-game
+ *     URL pattern (this is the exact source PCSX2's own built-in Cover Downloader uses).
+ *  2. Background/Icon/Screenshot: the archived OPL Manager GameArt Database, searched via
+ *     GitHub's real file listing (best-effort — coverage is less complete for these types).
  */
 class CoverArtFetcher(private val context: Context) {
 
     companion object {
+        private const val PS2_COVERS_BASE =
+            "https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/"
         private const val REPO_TREE_API =
             "https://api.github.com/repos/Luden02/psx-ps2-opl-art-database/git/trees/main?recursive=1"
         private const val RAW_BASE =
@@ -51,6 +55,7 @@ class CoverArtFetcher(private val context: Context) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
         .build()
 
     private val artDir = File(context.filesDir, "cover_art").apply { mkdirs() }
@@ -64,6 +69,13 @@ class CoverArtFetcher(private val context: Context) {
     /** Number of files found in the archive's listing — 0 means it couldn't be reached. */
     val indexedFileCount: Int get() = pathIndex.size
 
+    /** Converts our normalized "SLUS_212.42" form into the "SLUS-21242" serial form other sites use. */
+    private fun toSerialFormat(gameId: String): String {
+        val prefix = gameId.takeWhile { it.isLetter() }
+        val digits = gameId.dropWhile { it.isLetter() }.filter { it.isDigit() }
+        return "$prefix-$digits"
+    }
+
     private suspend fun ensureIndexLoaded() {
         if (indexLoaded) return
         withContext(Dispatchers.IO) {
@@ -71,25 +83,30 @@ class CoverArtFetcher(private val context: Context) {
             var text = ""
             var succeeded = false
 
-            try {
-                val request = Request.Builder()
-                    .url(REPO_TREE_API)
-                    .addHeader("User-Agent", "PS2Manager-Android-App")
-                    .addHeader("Accept", "application/vnd.github+json")
-                    .build()
-                client.newCall(request).execute().use { resp ->
-                    if (resp.isSuccessful) {
-                        val body = resp.body?.string().orEmpty()
-                        if (body.isNotBlank()) {
-                            text = body
-                            succeeded = true
+            val completed = withTimeoutOrNull(30_000) {
+                try {
+                    val request = Request.Builder()
+                        .url(REPO_TREE_API)
+                        .addHeader("User-Agent", "PS2Manager-Android-App")
+                        .addHeader("Accept", "application/vnd.github+json")
+                        .build()
+                    client.newCall(request).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val body = resp.body?.string().orEmpty()
+                            if (body.isNotBlank()) {
+                                text = body
+                                succeeded = true
+                            }
+                        } else {
+                            lastError = "GitHub API returned ${resp.code}"
                         }
-                    } else {
-                        lastError = "GitHub API returned ${resp.code}"
                     }
+                } catch (e: Exception) {
+                    lastError = e.message
                 }
-            } catch (e: Exception) {
-                lastError = e.message
+            }
+            if (completed == null) {
+                lastError = "Timed out reaching the art database (connection may be too slow)."
             }
 
             val paths = if (succeeded) {
@@ -110,12 +127,19 @@ class CoverArtFetcher(private val context: Context) {
     }
 
     /** Fetches every art type for a game; each field is null if that type wasn't found. */
-    suspend fun fetchAllArt(gameId: String, onProgress: (label: String, step: Int, total: Int) -> Unit = { _, _, _ -> }): ArtSet = withContext(Dispatchers.IO) {
-        ensureIndexLoaded()
+    suspend fun fetchAllArt(
+        gameId: String,
+        onProgress: (label: String, fileName: String, step: Int, total: Int) -> Unit = { _, _, _, _ -> }
+    ): ArtSet = withContext(Dispatchers.IO) {
         val types = ArtType.entries.toList()
         val results = mutableMapOf<ArtType, String?>()
         types.forEachIndexed { index, type ->
-            onProgress(type.name.lowercase().replaceFirstChar { it.uppercase() }, index + 1, types.size)
+            val plannedFile = if (type == ArtType.COVER) {
+                "${toSerialFormat(gameId)}.jpg"
+            } else {
+                "$gameId${type.oplSuffix}.${type.defaultExt}"
+            }
+            onProgress(type.name.lowercase().replaceFirstChar { it.uppercase() }, plannedFile, index + 1, types.size)
             results[type] = fetchArt(gameId, type)
         }
         ArtSet(
@@ -127,39 +151,46 @@ class CoverArtFetcher(private val context: Context) {
     }
 
     /** Kept for backward compatibility: fetches just the front cover. */
-    suspend fun fetchCoverArt(gameId: String): String? {
-        ensureIndexLoaded()
-        return fetchArt(gameId, ArtType.COVER)
-    }
+    suspend fun fetchCoverArt(gameId: String): String? = fetchArt(gameId, ArtType.COVER)
 
     suspend fun fetchArt(gameId: String, type: ArtType): String? = withContext(Dispatchers.IO) {
-        ensureIndexLoaded()
-
         val cacheKey = "$gameId${type.oplSuffix}"
         val cachedJpg = File(artDir, "$cacheKey.jpg")
         val cachedPng = File(artDir, "$cacheKey.png")
         if (cachedJpg.exists()) return@withContext cachedJpg.absolutePath
         if (cachedPng.exists()) return@withContext cachedPng.absolutePath
 
-        val matchedPath = findMatchingPath(gameId, type) ?: return@withContext null
+        if (type == ArtType.COVER) {
+            // Primary, verified source: direct per-serial URL, no lookup needed.
+            val serial = toSerialFormat(gameId)
+            val direct = downloadDirect("$PS2_COVERS_BASE$serial.jpg", cachedJpg)
+            if (direct != null) return@withContext direct
+        }
 
-        try {
-            val request = Request.Builder().url(RAW_BASE + matchedPath).build()
+        // Fallback / other art types: search the archived database's real file listing.
+        ensureIndexLoaded()
+        val matchedPath = findMatchingPath(gameId, type) ?: return@withContext null
+        val isPng = matchedPath.endsWith(".png", ignoreCase = true)
+        val cacheFile = if (isPng) cachedPng else cachedJpg
+        downloadDirect(RAW_BASE + matchedPath, cacheFile)
+    }
+
+    private fun downloadDirect(url: String, cacheFile: File): String? {
+        return try {
+            val request = Request.Builder().url(url).build()
             client.newCall(request).execute().use { resp ->
                 if (resp.isSuccessful) {
                     val bytes = resp.body?.bytes()
                     if (bytes != null && bytes.isNotEmpty()) {
-                        val isPng = matchedPath.endsWith(".png", ignoreCase = true)
-                        val cacheFile = if (isPng) cachedPng else cachedJpg
                         cacheFile.writeBytes(bytes)
-                        return@withContext cacheFile.absolutePath
+                        return cacheFile.absolutePath
                     }
                 }
+                null
             }
         } catch (e: Exception) {
-            // fall through to null
+            null
         }
-        null
     }
 
     /** Searches the real file listing for the best match to this Game ID + art type. */
@@ -177,10 +208,8 @@ class CoverArtFetcher(private val context: Context) {
         if (candidates.isEmpty()) return null
 
         val suffixUpper = type.oplSuffix.uppercase()
-        // Prefer a filename that also matches this specific art type's suffix.
         candidates.firstOrNull { filenameOf(it).contains(suffixUpper) }?.let { return it }
 
-        // Front cover often has no suffix at all — accept a suffix-less match only for COVER.
         if (type == ArtType.COVER) {
             candidates.firstOrNull { path ->
                 val f = filenameOf(path)
