@@ -142,13 +142,15 @@ class GameRepository(private val context: Context) {
      * rename operation at all and throw UnsupportedOperationException from DocumentsContract.
      * When that happens, fall back to copying the file to a new name in the same folder and
      * deleting the original, which works everywhere since it only needs create+write+delete.
+     * Since ISOs can be multiple GB, onCopyProgress reports bytes copied so the UI isn't silent.
      */
     suspend fun renameFile(
         documentUriString: String,
         gameId: String,
         title: String,
         extension: String,
-        parentDocumentId: String? = null
+        parentDocumentId: String? = null,
+        onCopyProgress: (bytesCopied: Long, totalBytes: Long) -> Unit = { _, _ -> }
     ): Pair<Boolean, String?> =
         withContext(Dispatchers.IO) {
             try {
@@ -180,9 +182,19 @@ class GameRepository(private val context: Context) {
                 val newFile = parent.createFile(mime, newName)
                     ?: return@withContext false to "Could not create the renamed file in the containing folder."
 
+                val totalBytes = doc.length()
+                var copiedBytes = 0L
+
                 context.contentResolver.openInputStream(doc.uri)?.use { input ->
                     context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
-                        input.copyTo(output)
+                        val buffer = ByteArray(1 shl 20) // 1 MB buffer — the default 8 KB is very slow over USB/SAF
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read == -1) break
+                            output.write(buffer, 0, read)
+                            copiedBytes += read
+                            onCopyProgress(copiedBytes, totalBytes)
+                        }
                     } ?: return@withContext false to "Could not write the new file."
                 } ?: return@withContext false to "Could not read the original file to copy it."
 
