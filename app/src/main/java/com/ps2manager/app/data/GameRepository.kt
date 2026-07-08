@@ -13,6 +13,7 @@ private val GAME_EXTENSIONS = setOf("iso")
 
 class GameRepository(private val context: Context) {
 
+    /** Recursively finds game files under the selected tree URI (DVD/CD/USB folder structure). */
     suspend fun scanFolder(treeUri: Uri): List<GameFile> = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext emptyList()
         val found = mutableListOf<GameFile>()
@@ -47,6 +48,7 @@ class GameRepository(private val context: Context) {
         }
     }
 
+    /** Finds ul.cfg at the root of the drive and lists the split-format (UL) games in it. */
     suspend fun scanUlGames(treeUri: Uri): List<GameFile> = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext emptyList()
         val cfgFile = root.findFile("ul.cfg") ?: return@withContext emptyList()
@@ -71,20 +73,28 @@ class GameRepository(private val context: Context) {
         }
     }
 
-    suspend fun renameUlGame(treeUri: Uri, gameId: String, newTitle: String): Boolean =
+    /**
+     * Renames a UL (split-format) game: updates its title in ul.cfg AND renames every
+     * physical part file to match, since OPL derives part filenames from a checksum
+     * of the title. Both must change together or OPL will no longer find the game.
+     */
+    suspend fun renameUlGame(treeUri: Uri, gameId: String, newTitle: String): Pair<Boolean, String?> =
         withContext(Dispatchers.IO) {
             try {
-                val root = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext false
-                val cfgFile = root.findFile("ul.cfg") ?: return@withContext false
+                val root = DocumentFile.fromTreeUri(context, treeUri)
+                    ?: return@withContext false to "Lost access to the drive (try re-picking the folder)."
+                val cfgFile = root.findFile("ul.cfg")
+                    ?: return@withContext false to "ul.cfg not found at the drive root."
 
                 val bytes = context.contentResolver.openInputStream(cfgFile.uri)?.use { it.readBytes() }
-                    ?: return@withContext false
+                    ?: return@withContext false to "Could not read ul.cfg."
                 val entries = UlConfig.parse(bytes).toMutableList()
 
                 val index = entries.indexOfFirst { it.gameId == gameId }
-                if (index == -1) return@withContext false
+                if (index == -1) return@withContext false to "This game's entry is no longer in ul.cfg."
                 val oldEntry = entries[index]
 
+                // Find the existing physical part files for this game, sorted by part number.
                 val gameIdEscaped = Regex.escape(gameId)
                 val partRegex = Regex("^ul\\.[0-9A-Fa-f]{8}\\.$gameIdEscaped\\.(\\d{2})$")
                 val existingParts = root.listFiles()
@@ -97,37 +107,54 @@ class GameRepository(private val context: Context) {
                     .sortedBy { it.first }
 
                 if (existingParts.size != oldEntry.parts) {
-                    return@withContext false
+                    // Physical files don't match what ul.cfg expects — bail out rather
+                    // than risk renaming the wrong things.
+                    return@withContext false to
+                        "Found ${existingParts.size} part file(s) on disk but ul.cfg expects ${oldEntry.parts} — skipping to avoid corrupting this game."
                 }
 
+                // Rename every part file to use the new title's checksum.
                 for ((partNum, doc) in existingParts) {
                     val newName = UlConfig.partFileName(newTitle, gameId, partNum)
-                    if (!doc.renameTo(newName)) return@withContext false
+                    if (!doc.renameTo(newName)) {
+                        return@withContext false to "Failed renaming part $partNum of ${existingParts.size} on disk."
+                    }
                 }
 
+                // Update the ul.cfg entry's title and write the whole file back.
                 entries[index] = oldEntry.copy(nameBytes = UlConfig.buildNameBytes(newTitle))
                 val newBytes = UlConfig.serialize(entries)
                 context.contentResolver.openOutputStream(cfgFile.uri)?.use { out ->
                     out.write(newBytes)
-                } ?: return@withContext false
+                } ?: return@withContext false to "Could not write the updated ul.cfg back to the drive."
 
-                true
+                true to null
             } catch (e: Exception) {
-                false
+                false to (e.message ?: e.javaClass.simpleName)
             }
         }
 
-    suspend fun renameFile(documentUriString: String, gameId: String, title: String, extension: String): Boolean =
+    /** Renames a file on the drive to OPL's GameID.Title.ext convention. Returns (success, errorMessage). */
+    suspend fun renameFile(documentUriString: String, gameId: String, title: String, extension: String): Pair<Boolean, String?> =
         withContext(Dispatchers.IO) {
             try {
-                val doc = DocumentFile.fromSingleUri(context, Uri.parse(documentUriString)) ?: return@withContext false
+                val doc = DocumentFile.fromSingleUri(context, Uri.parse(documentUriString))
+                    ?: return@withContext false to "Could not access the file (permission may have been lost — try re-picking the folder)."
+                if (!doc.exists()) {
+                    return@withContext false to "File no longer exists at that location."
+                }
                 val newName = GameIdUtil.buildOplFilename(gameId, title, extension)
-                doc.renameTo(newName)
+                val ok = doc.renameTo(newName)
+                if (ok) true to null else false to "The system refused the rename (name may already exist, or storage denied write access)."
             } catch (e: Exception) {
-                false
+                false to (e.message ?: e.javaClass.simpleName)
             }
         }
 
+    /**
+     * Saves whichever art types were found into an "ART" folder at the root of the
+     * selected drive, named the way OPL expects (GameID_COV.jpg, GameID_BG.jpg, etc).
+     */
     suspend fun saveArtSetToDrive(treeUri: Uri, gameId: String, artSet: ArtSet): Boolean =
         withContext(Dispatchers.IO) {
             try {
@@ -155,6 +182,10 @@ class GameRepository(private val context: Context) {
             }
         }
 
+    /**
+     * Saves a downloaded cover art file into an "ART" folder at the root of the selected
+     * drive, named the way OPL expects (GameID_COV.jpg). Kept for backward compatibility.
+     */
     suspend fun saveArtToDrive(treeUri: Uri, gameId: String, localArtPath: String): Boolean =
         saveArtSetToDrive(treeUri, gameId, ArtSet(cover = localArtPath))
 }
