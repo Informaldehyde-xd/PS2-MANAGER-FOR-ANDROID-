@@ -29,17 +29,16 @@ class GameRepository(private val context: Context) {
                 val name = child.name ?: continue
                 val ext = name.substringAfterLast('.', "").lowercase()
                 if (ext in GAME_EXTENSIONS) {
-                    var gameId = GameIdUtil.extractGameId(name)
-                    if (gameId == null) {
-                        gameId = IsoSystemCnfReader.readGameId(context, child.uri)
-                    }
-                    val existingTitle = GameIdUtil.extractExistingTitle(name, gameId)
+                    // Always read the real Game ID from inside the disc itself (SYSTEM.CNF) —
+                    // never infer it from the filename, which may have been renamed to anything
+                    // and could produce a false match.
+                    val gameId = IsoSystemCnfReader.readGameId(context, child.uri)
                     out.add(
                         GameFile(
                             documentId = child.uri.toString(),
                             displayName = name,
                             gameId = gameId,
-                            currentTitle = existingTitle,
+                            currentTitle = null,
                             sizeBytes = child.length()
                         )
                     )
