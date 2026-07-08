@@ -96,9 +96,13 @@ class GameRepository(private val context: Context) {
                 val oldEntry = entries[index]
 
                 // Find the existing physical part files for this game, sorted by part number.
+                // Match case-insensitively and allow 1-3 digit part numbers: different UL
+                // conversion tools (USBUtil, USBExtreme, OPLUtil, etc.) don't all zero-pad or
+                // case the Game ID the same way, so being strict here causes false "0 found".
                 val gameIdEscaped = Regex.escape(gameId)
-                val partRegex = Regex("^ul\\.[0-9A-Fa-f]{8}\\.$gameIdEscaped\\.(\\d{2})$")
-                val existingParts = root.listFiles()
+                val partRegex = Regex("^ul\\.[0-9A-Fa-f]{8}\\.$gameIdEscaped\\.(\\d{1,3})$", RegexOption.IGNORE_CASE)
+                val allFiles = root.listFiles()
+                val existingParts = allFiles
                     .mapNotNull { doc ->
                         val name = doc.name ?: return@mapNotNull null
                         val match = partRegex.find(name) ?: return@mapNotNull null
@@ -109,16 +113,40 @@ class GameRepository(private val context: Context) {
 
                 if (existingParts.size != oldEntry.parts) {
                     // Physical files don't match what ul.cfg expects — bail out rather
-                    // than risk renaming the wrong things.
+                    // than risk renaming the wrong things. Show what ul.* files actually
+                    // exist at the root so a naming-convention mismatch is easy to spot.
+                    val nearbyUlFiles = allFiles
+                        .mapNotNull { it.name }
+                        .filter { it.startsWith("ul.", ignoreCase = true) }
+                        .take(10)
+                    val diagnostic = if (nearbyUlFiles.isNotEmpty()) {
+                        " Files on disk starting with 'ul.': ${nearbyUlFiles.joinToString(", ")}"
+                    } else {
+                        " No files starting with 'ul.' were found at the drive root at all."
+                    }
                     return@withContext false to
-                        "Found ${existingParts.size} part file(s) on disk but ul.cfg expects ${oldEntry.parts} — skipping to avoid corrupting this game."
+                        "Found ${existingParts.size} part file(s) on disk but ul.cfg expects ${oldEntry.parts} — skipping to avoid corrupting this game.$diagnostic"
                 }
 
                 // Rename every part file to use the new title's checksum.
+                // Some storage providers don't fail a rename when the target name is already
+                // taken — they silently disambiguate by appending " (1)" and still report
+                // success. Guard against that: clear any pre-existing file at the target name
+                // first (likely a stray leftover from an earlier attempt), then verify the
+                // resulting name is exactly what we asked for rather than trusting a bare `true`.
                 for ((partNum, doc) in existingParts) {
                     val newName = UlConfig.partFileName(newTitle, gameId, partNum)
+                    if (doc.name == newName) continue // already correctly named
+
+                    root.findFile(newName)?.let { existing ->
+                        if (existing.uri != doc.uri) existing.delete()
+                    }
                     if (!doc.renameTo(newName)) {
                         return@withContext false to "Failed renaming part $partNum of ${existingParts.size} on disk."
+                    }
+                    if (doc.name != newName) {
+                        return@withContext false to
+                            "Part $partNum renamed to '${doc.name}' instead of '$newName' — this drive's storage provider renamed around a naming conflict. The conflicting file has now been removed; try again."
                     }
                 }
 
@@ -161,19 +189,35 @@ class GameRepository(private val context: Context) {
                 }
                 val newName = GameIdUtil.buildOplFilename(gameId, title, extension)
 
+                // Resolve the parent up front (if we have it) so we can clear any pre-existing
+                // file at the target name before renaming. Some storage providers silently
+                // disambiguate a taken name by appending " (1)" instead of failing the rename,
+                // which would otherwise go unnoticed since renameTo() still returns true.
+                val parent = parentDocumentId?.let { DocumentFile.fromTreeUri(context, Uri.parse(it)) }
+                parent?.findFile(newName)?.let { existing ->
+                    if (existing.uri != doc.uri) existing.delete()
+                }
+
                 val renamedDirectly = try {
                     doc.renameTo(newName)
                 } catch (e: UnsupportedOperationException) {
                     false
                 }
-                if (renamedDirectly) return@withContext true to null
+                if (renamedDirectly) {
+                    return@withContext if (doc.name == newName) {
+                        true to null
+                    } else {
+                        false to "Renamed to '${doc.name}' instead of '$newName' — this drive's storage provider renamed around a naming conflict. The conflicting file has now been removed; try again."
+                    }
+                }
 
                 // Direct rename isn't supported by this storage provider — fall back to copy + delete.
                 if (parentDocumentId == null) {
                     return@withContext false to "This drive's storage provider doesn't support renaming, and no folder reference was available for a copy-based rename."
                 }
-                val parent = DocumentFile.fromTreeUri(context, Uri.parse(parentDocumentId))
-                    ?: return@withContext false to "Could not access the containing folder (try re-picking the folder)."
+                if (parent == null) {
+                    return@withContext false to "Could not access the containing folder (try re-picking the folder)."
+                }
 
                 parent.findFile(newName)?.let { existing ->
                     if (existing.uri != doc.uri) existing.delete()
@@ -181,6 +225,9 @@ class GameRepository(private val context: Context) {
                 val mime = doc.type ?: "application/octet-stream"
                 val newFile = parent.createFile(mime, newName)
                     ?: return@withContext false to "Could not create the renamed file in the containing folder."
+                if (newFile.name != newName) {
+                    return@withContext false to "Created file as '${newFile.name}' instead of '$newName' — a naming conflict remains on this drive."
+                }
 
                 val totalBytes = doc.length()
                 var copiedBytes = 0L
