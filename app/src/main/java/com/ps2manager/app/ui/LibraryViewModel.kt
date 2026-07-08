@@ -96,7 +96,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             updateGame(game.documentId) { it.copy(status = GameStatus.LOOKING_UP) }
 
-            val renamed = if (game.isUlGame) {
+            val (renamed, error) = if (game.isUlGame) {
                 repository.renameUlGame(treeUri, gameId, title)
             } else {
                 val extension = game.displayName.substringAfterLast('.', "iso")
@@ -104,7 +104,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             }
 
             updateGame(game.documentId) {
-                it.copy(status = if (renamed) GameStatus.RENAMED else GameStatus.ERROR)
+                it.copy(status = if (renamed) GameStatus.RENAMED else GameStatus.ERROR, lastError = error)
             }
         }
     }
@@ -196,7 +196,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             repository.saveArtSetToDrive(treeUri, gameId, artSet)
             updateGame(game.documentId) { it.copy(artSet = artSet, coverArtLocalPath = artSet.cover) }
 
-            val renamed = if (game.isUlGame) {
+            val (renamed, error) = if (game.isUlGame) {
                 repository.renameUlGame(treeUri, gameId, title)
             } else {
                 val extension = game.displayName.substringAfterLast('.', "iso")
@@ -204,7 +204,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             }
 
             updateGame(game.documentId) {
-                it.copy(status = if (renamed) GameStatus.RENAMED else GameStatus.ERROR)
+                it.copy(status = if (renamed) GameStatus.RENAMED else GameStatus.ERROR, lastError = error)
             }
         }
     }
