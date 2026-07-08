@@ -9,6 +9,7 @@ data class GameFile(
     val sizeBytes: Long,
     val isUlGame: Boolean = false, // true if this came from ul.cfg (split USBExtreme/UL format) rather than a plain ISO
     val ulParts: Int = 0,          // number of split part files, only meaningful when isUlGame
+    val parentDocumentId: String? = null, // SAF uri of the containing folder (ISO files only) — needed for copy-fallback rename
     var matchedTitle: String? = null,   // title resolved from the online database
     var artSet: ArtSet? = null,         // fetched (or manually overridden) art, shown during preview
     var coverArtUrl: String? = null,    // resolved cover art URL, once found
