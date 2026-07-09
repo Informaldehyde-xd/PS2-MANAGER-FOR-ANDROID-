@@ -257,16 +257,23 @@ class GameRepository(private val context: Context) {
     /**
      * Recovery tool for when ul.cfg is missing, corrupted, or out of sync with the drive:
      * scans the root folder for "ul.<crc>.<gameId>.<partNum>" split-format files, groups
-     * them by Game ID, and adds a placeholder entry to ul.cfg for any group that doesn't
-     * already have a matching entry. Existing entries (and their titles) are left untouched.
+     * them by Game ID, and adds a proper entry to ul.cfg for any group that doesn't already
+     * have a matching entry. Existing entries (and their titles) are left untouched.
      *
-     * The placeholder title is just the Game ID, since the original title can't be recovered
-     * from the files alone (the part filenames encode a checksum of whatever title was used
-     * when they were created, not the title itself). After regenerating, use "Match Title &
-     * Rename" on the new entries as normal — that recomputes the checksum for the matched
-     * title and renames the physical part files to match, making everything consistent again.
+     * A raw Game ID alone isn't a usable OPL entry: OPL looks up part files by crc32(name),
+     * so a placeholder name wouldn't match the files' existing checksums and the game would
+     * show up but fail to boot. To make each recovered entry immediately correct, this:
+     *   1. Resolves a real title via [resolveTitle] (falls back to the Game ID if unavailable),
+     *   2. Renames the physical part files (cleanly renumbered from .00) so their checksum
+     *      matches that title, and
+     *   3. Writes the ul.cfg entry with that same title.
+     * That mirrors exactly what renameUlGame does for an existing entry, just done inline
+     * during recovery instead of requiring a separate manual step afterward.
      */
-    suspend fun regenerateUlConfig(treeUri: Uri): Pair<Boolean, String?> =
+    suspend fun regenerateUlConfig(
+        treeUri: Uri,
+        resolveTitle: (gameId: String) -> String? = { null }
+    ): Pair<Boolean, String?> =
         withContext(Dispatchers.IO) {
             try {
                 val root = DocumentFile.fromTreeUri(context, treeUri)
@@ -286,16 +293,17 @@ class GameRepository(private val context: Context) {
                 // Case-insensitive and 1-3 digit part numbers, same tolerance as the rename path,
                 // since different conversion tools format these slightly differently.
                 val partRegex = Regex("^ul\\.[0-9A-Fa-f]{8}\\.(.+)\\.(\\d{1,3})$", RegexOption.IGNORE_CASE)
-                data class Group(val displayGameId: String, val parts: MutableList<DocumentFile> = mutableListOf())
+                data class Group(val displayGameId: String, val parts: MutableList<Pair<Int, DocumentFile>> = mutableListOf())
                 val groups = LinkedHashMap<String, Group>() // key = uppercased gameId
 
                 for (doc in root.listFiles()) {
                     val name = doc.name ?: continue
                     val match = partRegex.find(name) ?: continue
                     val gameIdRaw = match.groupValues[1]
+                    val partNum = match.groupValues[2].toIntOrNull() ?: continue
                     val key = gameIdRaw.uppercase()
                     val group = groups.getOrPut(key) { Group(gameIdRaw) }
-                    group.parts.add(doc)
+                    group.parts.add(partNum to doc)
                 }
 
                 val orphanKeys = groups.keys.filterNot { it in knownGameIds }
@@ -307,19 +315,46 @@ class GameRepository(private val context: Context) {
                     }
                 }
 
+                var titlesResolved = 0
+                var renameFailures = 0
+
                 for (key in orphanKeys) {
                     val group = groups.getValue(key)
                     val gameId = group.displayGameId
+                    val resolved = resolveTitle(gameId)?.trim()?.takeIf { it.isNotEmpty() }
+                    if (resolved != null) titlesResolved++
+                    // OPL's name field is 32 bytes; keep titles within that so they display cleanly.
+                    val title = (resolved ?: gameId).take(32)
+
+                    // Renumber cleanly from .00 (in original part order) and rename every part
+                    // file so its checksum matches this title — otherwise the entry would show
+                    // a nice name in OPL's menu but fail to find its files when launched.
+                    val sortedParts = group.parts.sortedBy { it.first }.map { it.second }
+                    for ((partIndex, doc) in sortedParts.withIndex()) {
+                        val newName = UlConfig.partFileName(title, gameId, partIndex)
+                        if (doc.name == newName) continue
+                        try {
+                            root.findFile(newName)?.let { existing ->
+                                if (existing.uri != doc.uri) existing.delete()
+                            }
+                            if (!doc.renameTo(newName) || doc.name != newName) {
+                                renameFailures++
+                            }
+                        } catch (e: UnsupportedOperationException) {
+                            renameFailures++
+                        }
+                    }
+
                     val imageField = ByteArray(15)
                     val imageStr = "ul.$gameId".toByteArray(Charsets.ISO_8859_1)
                     imageStr.copyInto(imageField, 0, 0, imageStr.size.coerceAtMost(15))
                     existingEntries.add(
                         UlEntry(
-                            nameBytes = UlConfig.buildNameBytes(gameId), // placeholder — real title unrecoverable from files alone
+                            nameBytes = UlConfig.buildNameBytes(title),
                             imageBytes = imageField,
-                            parts = group.parts.size,
-                            media = 0, // DVD
-                            padBytes = ByteArray(15)
+                            parts = sortedParts.size,
+                            media = UlConfig.MEDIA_DVD, // split/UL format is almost always used for DVD-sized games
+                            padBytes = UlConfig.defaultPadBytes()
                         )
                     )
                 }
@@ -330,7 +365,15 @@ class GameRepository(private val context: Context) {
                 context.contentResolver.openOutputStream(targetCfg.uri)?.use { out -> out.write(newBytes) }
                     ?: return@withContext false to "Could not write ul.cfg to the drive."
 
-                true to "Added ${orphanKeys.size} missing entr${if (orphanKeys.size == 1) "y" else "ies"} to ul.cfg with placeholder titles. Use \"Match Title & Rename\" on ${if (orphanKeys.size == 1) "it" else "them"} to set the real title (this also fixes the file checksums)."
+                val summary = StringBuilder(
+                    "Added ${orphanKeys.size} entr${if (orphanKeys.size == 1) "y" else "ies"} to ul.cfg " +
+                        "($titlesResolved with a real title from the database" +
+                        if (titlesResolved < orphanKeys.size) ", ${orphanKeys.size - titlesResolved} using the Game ID as a placeholder)" else ")"
+                )
+                if (renameFailures > 0) {
+                    summary.append(" — $renameFailures part file(s) couldn't be renamed to match; use \"Match Title & Rename\" on those entries to fix them.")
+                }
+                true to summary.toString()
             } catch (e: Exception) {
                 false to (e.message ?: e.javaClass.simpleName)
             }
@@ -369,7 +412,7 @@ class GameRepository(private val context: Context) {
 
     /**
      * Saves a downloaded cover art file into an "ART" folder at the root of the selected
-     * drive, named the way OPL expects (GameID_COV.jpg). Kept for
+     * drive, named the way OPL expects (GameID_COV.jpg). Kept for backward compatibility.
      */
     suspend fun saveArtToDrive(treeUri: Uri, gameId: String, localArtPath: String): Boolean =
         saveArtSetToDrive(treeUri, gameId, ArtSet(cover = localArtPath))
