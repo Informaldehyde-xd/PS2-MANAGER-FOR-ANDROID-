@@ -190,6 +190,18 @@ fun LibraryScreen(
                     Text("PICK USB / HDD FOLDER", style = MaterialTheme.typography.labelLarge)
                 }
 
+                val hasFolder by viewModel.hasFolder.collectAsState()
+                if (hasFolder) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { viewModel.regenerateUlConfig() },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !isScanning
+                    ) {
+                        Text("Regenerate ul.cfg from Files on Drive")
+                    }
+                }
+
                 Spacer(Modifier.height(10.dp))
                 Text(status, style = MaterialTheme.typography.bodyMedium, color = Ps2OnSurfaceMuted)
 
