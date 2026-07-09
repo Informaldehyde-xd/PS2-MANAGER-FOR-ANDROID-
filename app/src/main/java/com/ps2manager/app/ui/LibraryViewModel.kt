@@ -32,6 +32,9 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     private val _statusMessage = MutableStateFlow("Pick your USB/HDD folder to get started.")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
 
+    private val _hasFolder = MutableStateFlow(false)
+    val hasFolder: StateFlow<Boolean> = _hasFolder.asStateFlow()
+
     private val _artFetchProgress = MutableStateFlow<String?>(null)
     val artFetchProgress: StateFlow<String?> = _artFetchProgress.asStateFlow()
 
@@ -40,6 +43,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
 
     fun onFolderSelected(treeUri: Uri) {
         selectedTreeUri = treeUri
+        _hasFolder.value = true
         viewModelScope.launch {
             _isScanning.value = true
             _statusMessage.value = "Scanning drive for game files..."
@@ -221,6 +225,25 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     fun applyAllMatched() {
         viewModelScope.launch {
             _games.value.filter { it.status == GameStatus.MATCHED }.forEach { applyGame(it) }
+        }
+    }
+
+    /**
+     * Recovery action for a missing/corrupted/out-of-sync ul.cfg: scans the drive for
+     * "ul.*" split-format part files that don't have a matching ul.cfg entry and adds
+     * placeholder entries for them, then rescans so they show up in the list ready to match.
+     */
+    fun regenerateUlConfig() {
+        val treeUri = selectedTreeUri ?: return
+        viewModelScope.launch {
+            _isScanning.value = true
+            _statusMessage.value = "Scanning drive for orphaned ul.* files..."
+            val (ok, message) = repository.regenerateUlConfig(treeUri)
+            _isScanning.value = false
+            _statusMessage.value = message ?: if (ok) "Regenerated ul.cfg." else "Could not regenerate ul.cfg."
+            if (ok) {
+                onFolderSelected(treeUri) // rescan so the new placeholder entries show up
+            }
         }
     }
 
