@@ -255,6 +255,88 @@ class GameRepository(private val context: Context) {
         }
 
     /**
+     * Recovery tool for when ul.cfg is missing, corrupted, or out of sync with the drive:
+     * scans the root folder for "ul.<crc>.<gameId>.<partNum>" split-format files, groups
+     * them by Game ID, and adds a placeholder entry to ul.cfg for any group that doesn't
+     * already have a matching entry. Existing entries (and their titles) are left untouched.
+     *
+     * The placeholder title is just the Game ID, since the original title can't be recovered
+     * from the files alone (the part filenames encode a checksum of whatever title was used
+     * when they were created, not the title itself). After regenerating, use "Match Title &
+     * Rename" on the new entries as normal — that recomputes the checksum for the matched
+     * title and renames the physical part files to match, making everything consistent again.
+     */
+    suspend fun regenerateUlConfig(treeUri: Uri): Pair<Boolean, String?> =
+        withContext(Dispatchers.IO) {
+            try {
+                val root = DocumentFile.fromTreeUri(context, treeUri)
+                    ?: return@withContext false to "Lost access to the drive (try re-picking the folder)."
+
+                // Load whatever's already in ul.cfg, if anything, so we only add what's missing.
+                val cfgFile = root.findFile("ul.cfg")
+                val existingEntries: MutableList<UlEntry> = if (cfgFile != null) {
+                    val bytes = context.contentResolver.openInputStream(cfgFile.uri)?.use { it.readBytes() }
+                    if (bytes != null) UlConfig.parse(bytes).toMutableList() else mutableListOf()
+                } else {
+                    mutableListOf()
+                }
+                val knownGameIds = existingEntries.mapNotNull { it.gameId?.uppercase() }.toSet()
+
+                // Group every "ul.<8-hex-crc>.<gameId>.<partNum>" file at the root by Game ID.
+                // Case-insensitive and 1-3 digit part numbers, same tolerance as the rename path,
+                // since different conversion tools format these slightly differently.
+                val partRegex = Regex("^ul\\.[0-9A-Fa-f]{8}\\.(.+)\\.(\\d{1,3})$", RegexOption.IGNORE_CASE)
+                data class Group(val displayGameId: String, val parts: MutableList<DocumentFile> = mutableListOf())
+                val groups = LinkedHashMap<String, Group>() // key = uppercased gameId
+
+                for (doc in root.listFiles()) {
+                    val name = doc.name ?: continue
+                    val match = partRegex.find(name) ?: continue
+                    val gameIdRaw = match.groupValues[1]
+                    val key = gameIdRaw.uppercase()
+                    val group = groups.getOrPut(key) { Group(gameIdRaw) }
+                    group.parts.add(doc)
+                }
+
+                val orphanKeys = groups.keys.filterNot { it in knownGameIds }
+                if (orphanKeys.isEmpty()) {
+                    return@withContext false to if (groups.isEmpty()) {
+                        "No 'ul.*' split-format files were found at the drive root."
+                    } else {
+                        "No orphaned ul.* files found — every part file on the drive already has a matching ul.cfg entry."
+                    }
+                }
+
+                for (key in orphanKeys) {
+                    val group = groups.getValue(key)
+                    val gameId = group.displayGameId
+                    val imageField = ByteArray(15)
+                    val imageStr = "ul.$gameId".toByteArray(Charsets.ISO_8859_1)
+                    imageStr.copyInto(imageField, 0, 0, imageStr.size.coerceAtMost(15))
+                    existingEntries.add(
+                        UlEntry(
+                            nameBytes = UlConfig.buildNameBytes(gameId), // placeholder — real title unrecoverable from files alone
+                            imageBytes = imageField,
+                            parts = group.parts.size,
+                            media = 0, // DVD
+                            padBytes = ByteArray(15)
+                        )
+                    )
+                }
+
+                val newBytes = UlConfig.serialize(existingEntries)
+                val targetCfg = cfgFile ?: root.createFile("application/octet-stream", "ul.cfg")
+                    ?: return@withContext false to "Could not create ul.cfg on the drive."
+                context.contentResolver.openOutputStream(targetCfg.uri)?.use { out -> out.write(newBytes) }
+                    ?: return@withContext false to "Could not write ul.cfg to the drive."
+
+                true to "Added ${orphanKeys.size} missing entr${if (orphanKeys.size == 1) "y" else "ies"} to ul.cfg with placeholder titles. Use \"Match Title & Rename\" on ${if (orphanKeys.size == 1) "it" else "them"} to set the real title (this also fixes the file checksums)."
+            } catch (e: Exception) {
+                false to (e.message ?: e.javaClass.simpleName)
+            }
+        }
+
+    /**
      * Saves whichever art types were found into an "ART" folder at the root of the
      * selected drive, named the way OPL expects (GameID_COV.jpg, GameID_BG.jpg, etc).
      */
@@ -287,7 +369,7 @@ class GameRepository(private val context: Context) {
 
     /**
      * Saves a downloaded cover art file into an "ART" folder at the root of the selected
-     * drive, named the way OPL expects (GameID_COV.jpg). Kept for backward compatibility.
+     * drive, named the way OPL expects (GameID_COV.jpg). Kept for
      */
     suspend fun saveArtToDrive(treeUri: Uri, gameId: String, localArtPath: String): Boolean =
         saveArtSetToDrive(treeUri, gameId, ArtSet(cover = localArtPath))
