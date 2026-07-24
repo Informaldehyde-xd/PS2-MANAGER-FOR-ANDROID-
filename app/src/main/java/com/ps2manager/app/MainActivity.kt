@@ -239,7 +239,9 @@ fun LibraryScreen(
                                     onPreviewReady(game)
                                     onStartArtPreview(game)
                                 },
-                                onTap = { onEditTitle(game) }
+                                onTap = { onEditTitle(game) },
+                                onConvertIsoToUl = { viewModel.convertIsoToUl(game) },
+                                onConvertUlToIso = { viewModel.convertUlToIso(game) }
                             )
                             Divider(color = Ps2SurfaceElevated)
                         }
@@ -284,7 +286,14 @@ fun EmptyLibraryPlaceholder() {
 }
 
 @Composable
-fun GameRow(game: GameFile, onRename: () -> Unit, onCoverArt: () -> Unit, onTap: () -> Unit) {
+fun GameRow(
+    game: GameFile,
+    onRename: () -> Unit,
+    onCoverArt: () -> Unit,
+    onTap: () -> Unit,
+    onConvertIsoToUl: () -> Unit,
+    onConvertUlToIso: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -343,7 +352,12 @@ fun GameRow(game: GameFile, onRename: () -> Unit, onCoverArt: () -> Unit, onTap:
                     modifier = Modifier.padding(bottom = 4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Ps2Primary)
                 ) { Text("Rename") }
-                OutlinedButton(onClick = onCoverArt) { Text("Cover Art") }
+                OutlinedButton(onClick = onCoverArt, modifier = Modifier.padding(bottom = 4.dp)) { Text("Cover Art") }
+                if (game.isUlGame) {
+                    OutlinedButton(onClick = onConvertUlToIso) { Text("Reassemble to ISO") }
+                } else {
+                    OutlinedButton(onClick = onConvertIsoToUl) { Text("Split to UL") }
+                }
             }
         }
     }
