@@ -11,6 +11,9 @@ import java.io.File
 
 private val GAME_EXTENSIONS = setOf("iso")
 
+// 1 GB per part, matching the real USBExtreme/OPL split-format convention.
+private const val UL_PART_SIZE = 1024L * 1024L * 1024L
+
 class GameRepository(private val context: Context) {
 
     /** Recursively finds game files under the selected tree URI (DVD/CD/USB folder structure). */
@@ -363,21 +366,82 @@ class GameRepository(private val context: Context) {
                 val targetCfg = cfgFile ?: root.createFile("application/octet-stream", "ul.cfg")
                     ?: return@withContext false to "Could not create ul.cfg on the drive."
                 context.contentResolver.openOutputStream(targetCfg.uri)?.use { out -> out.write(newBytes) }
-                    ?: return@withContext false to "Could not write ul.cfg to the drive."
+                ?: return@withContext false to "Could not write ul.cfg to the drive."
 
-                val summary = StringBuilder(
-                    "Added ${orphanKeys.size} entr${if (orphanKeys.size == 1) "y" else "ies"} to ul.cfg " +
-                        "($titlesResolved with a real title from the database" +
-                        if (titlesResolved < orphanKeys.size) ", ${orphanKeys.size - titlesResolved} using the Game ID as a placeholder)" else ")"
-                )
-                if (renameFailures > 0) {
-                    summary.append(" — $renameFailures part file(s) couldn't be renamed to match; use \"Match Title & Rename\" on those entries to fix them.")
-                }
-                true to summary.toString()
-            } catch (e: Exception) {
-                false to (e.message ?: e.javaClass.simpleName)
-            }
+            true to "Split into $partsWritten part(s) and added to ul.cfg. The original ISO was left untouched — delete it yourself if you want to free up space."
+        } catch (e: Exception) {
+            false to (e.message ?: e.javaClass.simpleName)
         }
+    }
+
+    /**
+     * Reassembles a UL (split-format) game's part files back into a single
+     * standard ISO. The UL entry and its part files are left untouched on the
+     * drive; remove them manually afterward if you want to free up the space.
+     */
+    suspend fun convertUlToIso(
+        treeUri: Uri,
+        gameId: String,
+        onProgress: (bytesCopied: Long, totalBytes: Long) -> Unit = { _, _ -> }
+    ): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
+        try {
+            val root = DocumentFile.fromTreeUri(context, treeUri)
+                ?: return@withContext false to "Lost access to the drive (try re-picking the folder)."
+            val cfgFile = root.findFile("ul.cfg")
+                ?: return@withContext false to "ul.cfg not found at the drive root."
+
+            val bytes = context.contentResolver.openInputStream(cfgFile.uri)?.use { it.readBytes() }
+                ?: return@withContext false to "Could not read ul.cfg."
+            val entry = UlConfig.parse(bytes).firstOrNull { it.gameId == gameId }
+                ?: return@withContext false to "This game's entry was not found in ul.cfg."
+
+            val gameIdEscaped = Regex.escape(gameId)
+            val partRegex = Regex("^ul\\.[0-9A-Fa-f]{8}\\.$gameIdEscaped\\.(\\d{1,3})$", RegexOption.IGNORE_CASE)
+            val existingParts = root.listFiles()
+                .mapNotNull { doc ->
+                    val name = doc.name ?: return@mapNotNull null
+                    val match = partRegex.find(name) ?: return@mapNotNull null
+                    match.groupValues[1].toInt() to doc
+                }
+                .sortedBy { it.first }
+
+            if (existingParts.size != entry.parts) {
+                return@withContext false to
+                    "Found ${existingParts.size} part file(s) on disk but ul.cfg expects ${entry.parts} — refusing to reassemble an incomplete set."
+            }
+
+            val totalBytes = existingParts.sumOf { it.second.length() }
+            val outputName = GameIdUtil.buildOplFilename(gameId, entry.title, "iso")
+            root.findFile(outputName)?.delete()
+            val outputFile = root.createFile("application/octet-stream", outputName)
+                ?: return@withContext false to "Could not create the output ISO file on the drive."
+
+            val output = context.contentResolver.openOutputStream(outputFile.uri)
+                ?: return@withContext false to "Could not write the output ISO file."
+
+            output.use { out ->
+                var bytesCopiedTotal = 0L
+                val buffer = ByteArray(1 shl 20)
+                for ((_, partDoc) in existingParts) {
+                    val partInput = context.contentResolver.openInputStream(partDoc.uri)
+                        ?: return@withContext false to "Could not read part file '${partDoc.name}'."
+                    partInput.use { inStream ->
+                        while (true) {
+                            val read = inStream.read(buffer)
+                            if (read <= 0) break
+                            out.write(buffer, 0, read)
+                            bytesCopiedTotal += read
+                            onProgress(bytesCopiedTotal, totalBytes)
+                        }
+                    }
+                }
+            }
+
+            true to "Reassembled into '$outputName'. The UL part files and ul.cfg entry were left untouched — remove them yourself if you want to free up space."
+        } catch (e: Exception) {
+            false to (e.message ?: e.javaClass.simpleName)
+        }
+    }
 
     /**
      * Saves whichever art types were found into an "ART" folder at the root of the
