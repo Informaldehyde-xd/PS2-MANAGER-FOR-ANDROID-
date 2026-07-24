@@ -228,6 +228,45 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /** Splits a plain ISO into UL (split-format) parts and adds a ul.cfg entry for it. */
+    fun convertIsoToUl(game: GameFile) {
+        val treeUri = selectedTreeUri ?: return
+        val gameId = game.gameId ?: return
+        val title = game.matchedTitle ?: return
+
+        viewModelScope.launch {
+            updateGame(game.documentId) { it.copy(status = GameStatus.LOOKING_UP) }
+            val (ok, message) = repository.convertIsoToUl(treeUri, game.documentId, gameId, title) { copied, total ->
+                val pct = if (total > 0) (copied * 100 / total) else 0
+                _artFetchProgress.value = "Splitting to UL format: $pct% (${copied / 1_000_000}MB / ${total / 1_000_000}MB)"
+            }
+            _artFetchProgress.value = null
+            updateGame(game.documentId) {
+                it.copy(status = if (ok) GameStatus.RENAMED else GameStatus.ERROR, lastError = message)
+            }
+            if (ok) onFolderSelected(treeUri) // rescan so the new UL entry shows up
+        }
+    }
+
+    /** Reassembles a UL (split-format) game's parts back into a single standard ISO. */
+    fun convertUlToIso(game: GameFile) {
+        val treeUri = selectedTreeUri ?: return
+        val gameId = game.gameId ?: return
+
+        viewModelScope.launch {
+            updateGame(game.documentId) { it.copy(status = GameStatus.LOOKING_UP) }
+            val (ok, message) = repository.convertUlToIso(treeUri, gameId) { copied, total ->
+                val pct = if (total > 0) (copied * 100 / total) else 0
+                _artFetchProgress.value = "Reassembling to ISO: $pct% (${copied / 1_000_000}MB / ${total / 1_000_000}MB)"
+            }
+            _artFetchProgress.value = null
+            updateGame(game.documentId) {
+                it.copy(status = if (ok) GameStatus.RENAMED else GameStatus.ERROR, lastError = message)
+            }
+            if (ok) onFolderSelected(treeUri)
+        }
+    }
+
     /**
      * Recovery action for a missing/corrupted/out-of-sync ul.cfg: scans the drive for
      * "ul.*" split-format part files that don't have a matching ul.cfg entry and adds
