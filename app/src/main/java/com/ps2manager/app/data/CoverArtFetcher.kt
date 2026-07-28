@@ -57,7 +57,7 @@ class CoverArtFetcher(private val context: Context) {
 
     companion object {
         // OPL's required COV list-icon dimensions; BG reuses this same image.
-        private const val COVER_WIDTH = 120
+        private const val COVER_WIDTH = 140
         private const val COVER_HEIGHT = 200
 
         private const val ART_DB_TREE_API =
