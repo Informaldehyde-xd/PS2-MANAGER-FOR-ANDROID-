@@ -52,12 +52,10 @@ class CoverArtFetcher(private val context: Context) {
         private const val BACKUP_COVER_BASE =
             "https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/"
             
-        // Bumped cache version to force a clean slate
-        private const val INDEX_CACHE_FILENAME = "opl_art_luden02_cache_v6.txt"
+        private const val INDEX_CACHE_FILENAME = "opl_art_luden02_cache_v7.txt"
     }
 
     private val client = OkHttpClient.Builder()
-        // Fast timeouts so direct fallbacks fail instantly without hanging the app
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.SECONDS)
         .callTimeout(15, TimeUnit.SECONDS)
@@ -71,7 +69,7 @@ class CoverArtFetcher(private val context: Context) {
     var lastError: String? = null
         private set
 
-    /** Generates all common Game ID serial variations. */
+    /** Generates all common Game ID serial variations (SLUS_212.42, SLUS_21242, SLUS-21242, etc.). */
     private fun getGameIdVariations(gameId: String): List<String> {
         val clean = gameId.uppercase().replace("[^A-Z0-9]".toRegex(), "")
         if (clean.length < 4) return listOf(gameId.uppercase())
@@ -86,10 +84,10 @@ class CoverArtFetcher(private val context: Context) {
         } else digits
 
         return listOf(
-            gameId.uppercase(),
             "${prefix}_$formattedDigits",    // OPL Standard: SLUS_212.42
-            "$prefix-$digits",               // Serial: SLUS-21242
             "${prefix}_$digits",             // No-dot: SLUS_21242
+            "$prefix-$digits",               // Serial: SLUS-21242
+            gameId.uppercase(),
             "$prefix$digits"                 // Flat: SLUS21242
         ).distinct()
     }
@@ -115,7 +113,6 @@ class CoverArtFetcher(private val context: Context) {
         withContext(Dispatchers.IO) {
             val cacheFile = File(context.filesDir, INDEX_CACHE_FILENAME)
 
-            // Try loading from local disk cache first
             if (cacheFile.exists() && cacheFile.length() > 0) {
                 pathIndex = cacheFile.readText().lineSequence().filter { it.isNotBlank() }.toList()
                 if (pathIndex.isNotEmpty()) {
@@ -169,10 +166,10 @@ class CoverArtFetcher(private val context: Context) {
         val idVariations = getGameIdVariations(gameId)
 
         val suffixes = when (type) {
-            ArtType.BACKGROUND -> listOf("_BG", "_BG.1")
-            ArtType.ICON -> listOf("_ICO", "_ICO.1")
-            ArtType.COVER -> listOf("_COV", "_COV.1")
-            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR.1")
+            ArtType.BACKGROUND -> listOf("_BG", "_BG.1", "_BG_1", "_BG01")
+            ArtType.ICON -> listOf("_ICO", "_ICO.1", "_ICO_1")
+            ArtType.COVER -> listOf("_COV", "_COV.1", "_COV_1")
+            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR.1", "_SCR_1")
         }
 
         val extensions = listOf(".PNG", ".JPG", ".JPEG", ".BMP")
@@ -232,31 +229,33 @@ class CoverArtFetcher(private val context: Context) {
             }
         }
 
-        // 2. Direct Fallback targeting the exact nested folder (e.g. PS2/SLUS_212.42/)
-        val stdId = getGameIdVariations(gameId).firstOrNull { it.contains('_') && it.contains('.') } ?: gameId.uppercase()
-        
+        // 2. Direct Fallback: Iterate over ALL game ID variations for both folder and filename
+        val idVariations = getGameIdVariations(gameId)
         val suffixes = when (type) {
-            ArtType.BACKGROUND -> listOf("_BG", "_BG.1")
-            ArtType.ICON -> listOf("_ICO", "_ICO.1")
-            ArtType.COVER -> listOf("_COV", "_COV.1")
-            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR.1")
+            ArtType.BACKGROUND -> listOf("_BG", "_BG.1", "_BG_1", "_BG01")
+            ArtType.ICON -> listOf("_ICO", "_ICO.1", "_ICO_1")
+            ArtType.COVER -> listOf("_COV", "_COV.1", "_COV_1")
+            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR.1", "_SCR_1")
         }
         val exts = listOf("jpg", "png", "jpeg")
-        
-        for (suffix in suffixes) {
-            for (ext in exts) {
-                // Correct path: /main/PS2/SLUS_212.42/SLUS_212.42_BG.jpg
-                val directUrl = "${ART_DB_RAW_BASE}PS2/${stdId}/${stdId}$suffix.$ext"
-                val bytes = downloadBytes(directUrl)
-                if (bytes != null) {
-                    return@withContext normalizeAndSave(bytes, cached, resizeForCover = type == ArtType.COVER)
+
+        for (folderId in idVariations) {
+            for (fileId in idVariations) {
+                for (suffix in suffixes) {
+                    for (ext in exts) {
+                        val directUrl = "${ART_DB_RAW_BASE}PS2/${folderId}/${fileId}$suffix.$ext"
+                        val bytes = downloadBytes(directUrl)
+                        if (bytes != null) {
+                            return@withContext normalizeAndSave(bytes, cached, resizeForCover = type == ArtType.COVER)
+                        }
+                    }
                 }
             }
         }
 
         // 3. Fallback for front cover only from backup repo
         if (type == ArtType.COVER) {
-            val serial = getGameIdVariations(gameId).firstOrNull { it.contains('-') } ?: gameId
+            val serial = idVariations.firstOrNull { it.contains('-') } ?: gameId
             val bytes = downloadBytes("$BACKUP_COVER_BASE$serial.jpg")
             if (bytes != null) {
                 return@withContext normalizeAndSave(bytes, cached, resizeForCover = true)
