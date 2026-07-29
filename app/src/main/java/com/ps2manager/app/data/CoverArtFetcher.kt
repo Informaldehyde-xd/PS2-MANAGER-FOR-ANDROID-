@@ -52,7 +52,7 @@ class CoverArtFetcher(private val context: Context) {
         private const val BACKUP_COVER_BASE =
             "https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/"
             
-        private const val INDEX_CACHE_FILENAME = "opl_art_luden02_cache_v7.txt"
+        private const val INDEX_CACHE_FILENAME = "opl_art_luden02_cache_v9.txt"
     }
 
     private val client = OkHttpClient.Builder()
@@ -69,7 +69,7 @@ class CoverArtFetcher(private val context: Context) {
     var lastError: String? = null
         private set
 
-    /** Generates all common Game ID serial variations (SLUS_212.42, SLUS_21242, SLUS-21242, etc.). */
+    /** Generates all common Game ID serial variations. */
     private fun getGameIdVariations(gameId: String): List<String> {
         val clean = gameId.uppercase().replace("[^A-Z0-9]".toRegex(), "")
         if (clean.length < 4) return listOf(gameId.uppercase())
@@ -84,11 +84,11 @@ class CoverArtFetcher(private val context: Context) {
         } else digits
 
         return listOf(
-            "${prefix}_$formattedDigits",    // OPL Standard: SLUS_212.42
-            "${prefix}_$digits",             // No-dot: SLUS_21242
-            "$prefix-$digits",               // Serial: SLUS-21242
+            "${prefix}_$formattedDigits",    // OPL Standard: SCUS_974.81
+            "${prefix}_$digits",             // No-dot: SCUS_97481
+            "$prefix-$digits",               // Serial: SCUS-97481
             gameId.uppercase(),
-            "$prefix$digits"                 // Flat: SLUS21242
+            "$prefix$digits"                 // Flat: SCUS97481
         ).distinct()
     }
 
@@ -161,15 +161,15 @@ class CoverArtFetcher(private val context: Context) {
         }
     }
 
-    /** Matches game ID variations and strict suffixes against the in-memory tree index. */
+    /** Matches game ID variations and correct OPL suffixes against the index. */
     private fun findExactPath(gameId: String, type: ArtType): String? {
         val idVariations = getGameIdVariations(gameId)
 
         val suffixes = when (type) {
-            ArtType.BACKGROUND -> listOf("_BG", "_BG.1", "_BG_1", "_BG01")
-            ArtType.ICON -> listOf("_ICO", "_ICO.1", "_ICO_1")
-            ArtType.COVER -> listOf("_COV", "_COV.1", "_COV_1")
-            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR.1", "_SCR_1")
+            ArtType.BACKGROUND -> listOf("_BG", "_BG_00", "_BG_01", "_BG_02", "_BG.1")
+            ArtType.ICON -> listOf("_ICO", "_ICO.1")
+            ArtType.COVER -> listOf("_COV", "_COV2", "_COV.1")
+            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR_00", "_SCR_01", "_SCR.1")
         }
 
         val extensions = listOf(".PNG", ".JPG", ".JPEG", ".BMP")
@@ -229,15 +229,15 @@ class CoverArtFetcher(private val context: Context) {
             }
         }
 
-        // 2. Direct Fallback: Iterate over ALL game ID variations for both folder and filename
+        // 2. Direct Fallback matching both plain and numbered OPL suffixes
         val idVariations = getGameIdVariations(gameId)
         val suffixes = when (type) {
-            ArtType.BACKGROUND -> listOf("_BG", "_BG.1", "_BG_1", "_BG01")
-            ArtType.ICON -> listOf("_ICO", "_ICO.1", "_ICO_1")
-            ArtType.COVER -> listOf("_COV", "_COV.1", "_COV_1")
-            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR.1", "_SCR_1")
+            ArtType.BACKGROUND -> listOf("_BG", "_BG_00", "_BG_01", "_BG.1")
+            ArtType.ICON -> listOf("_ICO", "_ICO.1")
+            ArtType.COVER -> listOf("_COV", "_COV2", "_COV.1")
+            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR_00", "_SCR")
         }
-        val exts = listOf("jpg", "png", "jpeg")
+        val exts = listOf("png", "jpg", "jpeg")
 
         for (folderId in idVariations) {
             for (fileId in idVariations) {
