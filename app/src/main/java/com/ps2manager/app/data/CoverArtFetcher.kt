@@ -36,7 +36,7 @@ data class ArtSet(
 }
 
 /**
- * Art comes primarily from Luden02/psx-ps2-opl-art-database and lunac/ps2-art for background and icon images.
+ * Art comes from Luden02/psx-ps2-opl-art-database and lunac/ps2-art repositories.
  *
  * IMPORTANT — real OPL (rev 2159+, Oct 2024 onward) dropped JPG/BMP support
  * entirely and only accepts PNG, lowercase extension. Every image this class
@@ -46,7 +46,6 @@ data class ArtSet(
 class CoverArtFetcher(private val context: Context) {
 
     companion object {
-        // OPL's required COV list-icon dimensions
         private const val COVER_WIDTH = 140
         private const val COVER_HEIGHT = 200
 
@@ -54,12 +53,7 @@ class CoverArtFetcher(private val context: Context) {
             "https://api.github.com/repos/Luden02/psx-ps2-opl-art-database/git/trees/main?recursive=1"
         private const val ART_DB_RAW_BASE =
             "https://raw.githubusercontent.com/Luden02/psx-ps2-opl-art-database/main/"
-        
-        // Lunac GitHub repository base for art assets (_BG, _ICO)
-        private const val LUNAC_ART_BASE =
-            "https://raw.githubusercontent.com/lunac/ps2-art/master/"
 
-        // Backup cover source
         private const val BACKUP_COVER_BASE =
             "https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/"
         private const val INDEX_CACHE_FILENAME = "ps2_art_index_cache.txt"
@@ -79,7 +73,7 @@ class CoverArtFetcher(private val context: Context) {
     var lastError: String? = null
         private set
 
-    /** Converts our normalized "SLUS_212.42" form into the "SLUS-21242" serial form other sites use. */
+    /** Converts normalized "SLUS_212.42" into "SLUS-21242" format. */
     private fun toSerialFormat(gameId: String): String {
         val prefix = gameId.takeWhile { it.isLetter() }
         val digits = gameId.dropWhile { it.isLetter() }.filter { it.isDigit() }
@@ -153,18 +147,40 @@ class CoverArtFetcher(private val context: Context) {
         }
     }
 
-    /** Exact (case-insensitive) match against the real file listing. */
+    /**
+     * Searches the index for matching art paths across multiple ID variations,
+     * suffixes (_BG, _BG.1, _ICO, _ICO.1), and extensions (.png, .jpg, .jpeg).
+     */
     private fun findExactPath(gameId: String, type: ArtType): String? {
-        val expectedName = "$gameId${type.oplSuffix}.png".uppercase()
-        val suffix1Name = "$gameId${type.oplSuffix}.1.PNG".uppercase()
-        
-        return pathIndex.firstOrNull { 
-            val name = it.substringAfterLast('/').uppercase()
-            name == expectedName || ((type == ArtType.BACKGROUND || type == ArtType.ICON) && name == suffix1Name)
+        val serial = toSerialFormat(gameId)
+        val noDot = gameId.replace(".", "")
+        val idVariations = listOf(gameId, serial, noDot).map { it.uppercase() }.distinct()
+
+        val suffixes = when (type) {
+            ArtType.BACKGROUND -> listOf("_BG", "_BG.1")
+            ArtType.ICON -> listOf("_ICO", "_ICO.1")
+            ArtType.COVER -> listOf("_COV", "_COV.1")
+            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR.1")
+        }.map { it.uppercase() }
+
+        val extensions = listOf(".PNG", ".JPG", ".JPEG")
+
+        val candidateNames = HashSet<String>()
+        for (id in idVariations) {
+            for (suffix in suffixes) {
+                for (ext in extensions) {
+                    candidateNames.add("$id$suffix$ext")
+                }
+            }
+        }
+
+        return pathIndex.firstOrNull { path ->
+            val filename = path.substringAfterLast('/').uppercase()
+            candidateNames.contains(filename)
         }
     }
 
-    /** Fetches all four art types for a game from the comprehensive databases. */
+    /** Fetches all four art types for a game. */
     suspend fun fetchAllArt(
         gameId: String,
         onProgress: (label: String, fileName: String, step: Int, total: Int) -> Unit = { _, _, _, _ -> }
@@ -193,21 +209,27 @@ class CoverArtFetcher(private val context: Context) {
         val cached = File(artDir, "$gameId${type.oplSuffix}.png")
         if (cached.exists()) return@withContext cached.absolutePath
 
-        // Attempt direct fetching from Lunac repo for _BG and _ICO files (_BG, _BG.1, _ICO, _ICO.1)
+        // 1. Attempt direct fetching from Lunac repo for _BG and _ICO files
         if (type == ArtType.BACKGROUND || type == ArtType.ICON) {
             val serial = toSerialFormat(gameId)
+            val noDot = gameId.replace(".", "")
+            val idVariations = listOf(gameId, serial, noDot).distinct()
             val suffixes = if (type == ArtType.BACKGROUND) listOf("_BG", "_BG.1") else listOf("_ICO", "_ICO.1")
-            val extensions = listOf("png", "jpg")
+            val extensions = listOf("png", "jpg", "jpeg")
+            val branches = listOf("main", "master")
 
-            for (suffix in suffixes) {
-                for (ext in extensions) {
-                    val candidateNames = listOf("$gameId$suffix.$ext", "$serial$suffix.$ext")
-                    for (name in candidateNames) {
-                        val candidatePaths = listOf(name, "Art/$name", "art/$name")
-                        for (relativePath in candidatePaths) {
-                            val bytes = downloadBytes("$LUNAC_ART_BASE$relativePath")
-                            if (bytes != null) {
-                                return@withContext normalizeAndSave(bytes, cached, resizeForCover = false)
+            for (branch in branches) {
+                val baseUrl = "https://raw.githubusercontent.com/lunac/ps2-art/$branch/"
+                for (id in idVariations) {
+                    for (suffix in suffixes) {
+                        for (ext in extensions) {
+                            val name = "$id$suffix.$ext"
+                            val candidatePaths = listOf(name, "Art/$name", "art/$name", "ART/$name")
+                            for (relativePath in candidatePaths) {
+                                val bytes = downloadBytes("$baseUrl$relativePath")
+                                if (bytes != null) {
+                                    return@withContext normalizeAndSave(bytes, cached, resizeForCover = false)
+                                }
                             }
                         }
                     }
@@ -215,6 +237,7 @@ class CoverArtFetcher(private val context: Context) {
             }
         }
 
+        // 2. Try primary database index (Luden02 repository)
         ensureIndexLoaded()
         val matchedPath = findExactPath(gameId, type)
         if (matchedPath != null) {
@@ -224,8 +247,7 @@ class CoverArtFetcher(private val context: Context) {
             }
         }
 
-        // Fallback: only for the front cover, from a different (JPG) source —
-        // still normalized to PNG (and resized) before saving.
+        // 3. Fallback for front cover only
         if (type == ArtType.COVER) {
             val serial = toSerialFormat(gameId)
             val bytes = downloadBytes("$BACKUP_COVER_BASE$serial.jpg")
@@ -252,8 +274,7 @@ class CoverArtFetcher(private val context: Context) {
     }
 
     /**
-     * Decodes whatever format was downloaded (or manually picked) and
-     * re-encodes it as a real PNG before saving — guarantees OPL compatibility.
+     * Decodes whatever format was downloaded and re-encodes it as a PNG file.
      */
     private fun normalizeAndSave(sourceBytes: ByteArray, destFile: File, resizeForCover: Boolean = false): String? {
         var bitmap = BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size) ?: return null
@@ -271,7 +292,7 @@ class CoverArtFetcher(private val context: Context) {
         return destFile.absolutePath
     }
 
-    /** Copies a user-picked image in as art, normalized to PNG regardless of the picked format. */
+    /** Copies a user-picked image in as art, normalized to PNG regardless of format. */
     suspend fun saveManualArt(gameId: String, type: ArtType, sourceBytes: ByteArray, ext: String): String? =
         withContext(Dispatchers.IO) {
             val file = File(artDir, "$gameId${type.oplSuffix}.png")
