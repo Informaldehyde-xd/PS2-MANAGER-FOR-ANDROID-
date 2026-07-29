@@ -36,7 +36,7 @@ data class ArtSet(
 }
 
 /**
- * Art comes primarily from Luden02/psx-ps2-opl-art-database and lunac/ps2-art for background images.
+ * Art comes primarily from Luden02/psx-ps2-opl-art-database and lunac/ps2-art for background and icon images.
  *
  * IMPORTANT — real OPL (rev 2159+, Oct 2024 onward) dropped JPG/BMP support
  * entirely and only accepts PNG, lowercase extension. Every image this class
@@ -55,8 +55,8 @@ class CoverArtFetcher(private val context: Context) {
         private const val ART_DB_RAW_BASE =
             "https://raw.githubusercontent.com/Luden02/psx-ps2-opl-art-database/main/"
         
-        // Lunac GitHub repository base for background artwork
-        private const val LUNAC_BG_BASE =
+        // Lunac GitHub repository base for art assets (_BG, _ICO)
+        private const val LUNAC_ART_BASE =
             "https://raw.githubusercontent.com/lunac/ps2-art/master/"
 
         // Backup cover source
@@ -86,9 +86,7 @@ class CoverArtFetcher(private val context: Context) {
         return "$prefix-$digits"
     }
 
-    /**
-     * Fast manual scan for "path":"..." entries in the raw JSON.
-     */
+    /** Fast manual scan for "path":"..." entries in the raw JSON. */
     private fun extractPathsFast(json: String): List<String> {
         val paths = mutableListOf<String>()
         val marker = "\"path\":\""
@@ -155,14 +153,14 @@ class CoverArtFetcher(private val context: Context) {
         }
     }
 
-    /** Exact (case-insensitive) match against the real file listing: "{gameId}_{SUFFIX}.png" or "_BG.1". */
+    /** Exact (case-insensitive) match against the real file listing. */
     private fun findExactPath(gameId: String, type: ArtType): String? {
         val expectedName = "$gameId${type.oplSuffix}.png".uppercase()
-        val bg1Name = "$gameId${type.oplSuffix}.1.PNG".uppercase()
+        val suffix1Name = "$gameId${type.oplSuffix}.1.PNG".uppercase()
         
         return pathIndex.firstOrNull { 
             val name = it.substringAfterLast('/').uppercase()
-            name == expectedName || (type == ArtType.BACKGROUND && name == bg1Name)
+            name == expectedName || ((type == ArtType.BACKGROUND || type == ArtType.ICON) && name == suffix1Name)
         }
     }
 
@@ -184,20 +182,8 @@ class CoverArtFetcher(private val context: Context) {
 
         onProgress("Background", "$gameId${ArtType.BACKGROUND.oplSuffix}.png", 4, 4)
         val background = fetchArt(gameId, ArtType.BACKGROUND)
-            ?: cover?.let { copyAsBackground(gameId, it) }
 
         ArtSet(cover = cover, background = background, icon = icon, screenshot = screenshot)
-    }
-
-    /** Copies the cover image into the background cache slot as a fallback. */
-    private fun copyAsBackground(gameId: String, coverPath: String): String? {
-        return try {
-            val dest = File(artDir, "$gameId${ArtType.BACKGROUND.oplSuffix}.png")
-            File(coverPath).copyTo(dest, overwrite = true)
-            dest.absolutePath
-        } catch (e: Exception) {
-            null
-        }
     }
 
     /** Kept for backward compatibility: fetches just the front cover. */
@@ -207,19 +193,19 @@ class CoverArtFetcher(private val context: Context) {
         val cached = File(artDir, "$gameId${type.oplSuffix}.png")
         if (cached.exists()) return@withContext cached.absolutePath
 
-        // Specifically attempt fetching background images from the lunac repo (_BG or _BG.1 only)
-        if (type == ArtType.BACKGROUND) {
+        // Attempt direct fetching from Lunac repo for _BG and _ICO files (_BG, _BG.1, _ICO, _ICO.1)
+        if (type == ArtType.BACKGROUND || type == ArtType.ICON) {
             val serial = toSerialFormat(gameId)
-            val bgSuffixes = listOf("_BG", "_BG.1")
+            val suffixes = if (type == ArtType.BACKGROUND) listOf("_BG", "_BG.1") else listOf("_ICO", "_ICO.1")
             val extensions = listOf("png", "jpg")
 
-            for (suffix in bgSuffixes) {
+            for (suffix in suffixes) {
                 for (ext in extensions) {
                     val candidateNames = listOf("$gameId$suffix.$ext", "$serial$suffix.$ext")
                     for (name in candidateNames) {
                         val candidatePaths = listOf(name, "Art/$name", "art/$name")
                         for (relativePath in candidatePaths) {
-                            val bytes = downloadBytes("$LUNAC_BG_BASE$relativePath")
+                            val bytes = downloadBytes("$LUNAC_ART_BASE$relativePath")
                             if (bytes != null) {
                                 return@withContext normalizeAndSave(bytes, cached, resizeForCover = false)
                             }
@@ -289,9 +275,6 @@ class CoverArtFetcher(private val context: Context) {
     suspend fun saveManualArt(gameId: String, type: ArtType, sourceBytes: ByteArray, ext: String): String? =
         withContext(Dispatchers.IO) {
             val file = File(artDir, "$gameId${type.oplSuffix}.png")
-            val path = normalizeAndSave(sourceBytes, file, resizeForCover = type == ArtType.COVER)
-            // Keep the background in sync if the user manually replaces the cover.
-            if (type == ArtType.COVER && path != null) copyAsBackground(gameId, path)
-            path
+            normalizeAndSave(sourceBytes, file, resizeForCover = type == ArtType.COVER)
         }
 }
