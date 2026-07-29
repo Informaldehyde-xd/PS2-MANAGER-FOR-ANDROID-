@@ -36,27 +36,17 @@ data class ArtSet(
 }
 
 /**
- * Art comes primarily from Luden02/psx-ps2-opl-art-database — a complete,
- * verified dump of OPL Manager's own GameArt Database (confirmed via the
- * same author's own OrbitOPL Toolbox app, which uses this exact repo and
- * documents its GAMEID_COV / _ICO / _SCR / _BG naming convention, already
- * stored as PNG). This gives us ALL four art types from one source, not
- * just the cover.
+ * Art comes primarily from Luden02/psx-ps2-opl-art-database and lunac/ps2-art for background images.
  *
  * IMPORTANT — real OPL (rev 2159+, Oct 2024 onward) dropped JPG/BMP support
  * entirely and only accepts PNG, lowercase extension. Every image this class
  * produces is guaranteed to be a real PNG regardless of what format the
- * source actually returned: after downloading (or receiving a manually
- * user-picked image), it's decoded and re-encoded through Android's Bitmap
- * PNG encoder before ever being cached or written to the drive. This is a
- * safety net, not just an assumption — if the primary source or a future
- * fallback ever serves a JPG, it still comes out the other end as a real,
- * OPL-compatible PNG.
+ * source actually returned.
  */
 class CoverArtFetcher(private val context: Context) {
 
     companion object {
-        // OPL's required COV list-icon dimensions; BG reuses this same image.
+        // OPL's required COV list-icon dimensions
         private const val COVER_WIDTH = 140
         private const val COVER_HEIGHT = 200
 
@@ -64,8 +54,12 @@ class CoverArtFetcher(private val context: Context) {
             "https://api.github.com/repos/Luden02/psx-ps2-opl-art-database/git/trees/main?recursive=1"
         private const val ART_DB_RAW_BASE =
             "https://raw.githubusercontent.com/Luden02/psx-ps2-opl-art-database/main/"
-        // Backup only, used if the primary database has no entry for a given
-        // game's cover — still gets converted to PNG before being saved.
+        
+        // Lunac GitHub repository base for background artwork
+        private const val LUNAC_BG_BASE =
+            "https://raw.githubusercontent.com/lunac/ps2-art/master/"
+
+        // Backup cover source
         private const val BACKUP_COVER_BASE =
             "https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/"
         private const val INDEX_CACHE_FILENAME = "ps2_art_index_cache.txt"
@@ -86,7 +80,6 @@ class CoverArtFetcher(private val context: Context) {
         private set
 
     /** Converts our normalized "SLUS_212.42" form into the "SLUS-21242" serial form other sites use. */
-    /** Converts our normalized "SLUS_212.42" form into the "SLUS-21242" serial form other sites use. */
     private fun toSerialFormat(gameId: String): String {
         val prefix = gameId.takeWhile { it.isLetter() }
         val digits = gameId.dropWhile { it.isLetter() }.filter { it.isDigit() }
@@ -94,10 +87,7 @@ class CoverArtFetcher(private val context: Context) {
     }
 
     /**
-     * Fast manual scan for "path":"..." entries in the raw JSON — much faster
-     * and more predictable than a regex findAll() over a potentially huge
-     * (multi-megabyte) response, which was the real bottleneck causing
-     * indefinite-feeling hangs on some devices/connections.
+     * Fast manual scan for "path":"..." entries in the raw JSON.
      */
     private fun extractPathsFast(json: String): List<String> {
         val paths = mutableListOf<String>()
@@ -119,12 +109,6 @@ class CoverArtFetcher(private val context: Context) {
             val cacheFile = File(context.filesDir, INDEX_CACHE_FILENAME)
             var paths: List<String> = emptyList()
 
-            // Hard cap on the ENTIRE operation — both the network fetch and the
-            // text parsing that follows it. A previous version only bounded the
-            // network call itself, but this repo's file listing can be a very
-            // large response, and parsing that huge string with regex afterward
-            // had no timeout at all — that's what caused indefinite hangs on
-            // slower connections/devices, not just a slow download.
             val completed = withTimeoutOrNull(30_000) {
                 var text = ""
                 var succeeded = false
@@ -171,36 +155,41 @@ class CoverArtFetcher(private val context: Context) {
         }
     }
 
-    /** Exact (case-insensitive) match against the real file listing: "{gameId}_{SUFFIX}.png". */
+    /** Exact (case-insensitive) match against the real file listing: "{gameId}_{SUFFIX}.png" or "_BG.1". */
     private fun findExactPath(gameId: String, type: ArtType): String? {
         val expectedName = "$gameId${type.oplSuffix}.png".uppercase()
-        return pathIndex.firstOrNull { it.substringAfterLast('/').uppercase() == expectedName }
+        val bg1Name = "$gameId${type.oplSuffix}.1.PNG".uppercase()
+        
+        return pathIndex.firstOrNull { 
+            val name = it.substringAfterLast('/').uppercase()
+            name == expectedName || (type == ArtType.BACKGROUND && name == bg1Name)
+        }
     }
 
-    /** Fetches all four art types for a game from the comprehensive database. */
+    /** Fetches all four art types for a game from the comprehensive databases. */
     suspend fun fetchAllArt(
         gameId: String,
         onProgress: (label: String, fileName: String, step: Int, total: Int) -> Unit = { _, _, _, _ -> }
     ): ArtSet = withContext(Dispatchers.IO) {
         ensureIndexLoaded()
 
-        onProgress("Cover", "$gameId${ArtType.COVER.oplSuffix}.png", 1, 3)
+        onProgress("Cover", "$gameId${ArtType.COVER.oplSuffix}.png", 1, 4)
         val cover = fetchArt(gameId, ArtType.COVER)
 
-        onProgress("Icon", "$gameId${ArtType.ICON.oplSuffix}.png", 2, 3)
+        onProgress("Icon", "$gameId${ArtType.ICON.oplSuffix}.png", 2, 4)
         val icon = fetchArt(gameId, ArtType.ICON)
 
-        onProgress("Screenshot", "$gameId${ArtType.SCREENSHOT.oplSuffix}.png", 3, 3)
+        onProgress("Screenshot", "$gameId${ArtType.SCREENSHOT.oplSuffix}.png", 3, 4)
         val screenshot = fetchArt(gameId, ArtType.SCREENSHOT)
 
-        // Background is intentionally the same 120x400 cover image, not a
-        // separate fetch — copy the cover file to the background slot.
-        val background = cover?.let { copyAsBackground(gameId, it) }
+        onProgress("Background", "$gameId${ArtType.BACKGROUND.oplSuffix}.png", 4, 4)
+        val background = fetchArt(gameId, ArtType.BACKGROUND)
+            ?: cover?.let { copyAsBackground(gameId, it) }
 
         ArtSet(cover = cover, background = background, icon = icon, screenshot = screenshot)
     }
 
-    /** Copies the already-normalized cover image into the background cache slot too. */
+    /** Copies the cover image into the background cache slot as a fallback. */
     private fun copyAsBackground(gameId: String, coverPath: String): String? {
         return try {
             val dest = File(artDir, "$gameId${ArtType.BACKGROUND.oplSuffix}.png")
@@ -217,6 +206,28 @@ class CoverArtFetcher(private val context: Context) {
     suspend fun fetchArt(gameId: String, type: ArtType): String? = withContext(Dispatchers.IO) {
         val cached = File(artDir, "$gameId${type.oplSuffix}.png")
         if (cached.exists()) return@withContext cached.absolutePath
+
+        // Specifically attempt fetching background images from the lunac repo (_BG or _BG.1 only)
+        if (type == ArtType.BACKGROUND) {
+            val serial = toSerialFormat(gameId)
+            val bgSuffixes = listOf("_BG", "_BG.1")
+            val extensions = listOf("png", "jpg")
+
+            for (suffix in bgSuffixes) {
+                for (ext in extensions) {
+                    val candidateNames = listOf("$gameId$suffix.$ext", "$serial$suffix.$ext")
+                    for (name in candidateNames) {
+                        val candidatePaths = listOf(name, "Art/$name", "art/$name")
+                        for (relativePath in candidatePaths) {
+                            val bytes = downloadBytes("$LUNAC_BG_BASE$relativePath")
+                            if (bytes != null) {
+                                return@withContext normalizeAndSave(bytes, cached, resizeForCover = false)
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         ensureIndexLoaded()
         val matchedPath = findExactPath(gameId, type)
@@ -256,11 +267,7 @@ class CoverArtFetcher(private val context: Context) {
 
     /**
      * Decodes whatever format was downloaded (or manually picked) and
-     * re-encodes it as a real PNG before saving — guarantees OPL
-     * compatibility regardless of the source format. Cover art is resized to
-     * exactly 120x400, OPL's required list-icon dimensions (stretched to
-     * fit, since cover art is rarely authored at that narrow aspect ratio
-     * natively).
+     * re-encodes it as a real PNG before saving — guarantees OPL compatibility.
      */
     private fun normalizeAndSave(sourceBytes: ByteArray, destFile: File, resizeForCover: Boolean = false): String? {
         var bitmap = BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size) ?: return null
