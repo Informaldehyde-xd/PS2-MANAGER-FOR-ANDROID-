@@ -52,11 +52,12 @@ class CoverArtFetcher(private val context: Context) {
         private const val BACKUP_COVER_BASE =
             "https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/"
             
-        private const val INDEX_CACHE_FILENAME = "opl_art_luden02_cache_v5.txt"
+        // Bumped cache version to force a clean slate
+        private const val INDEX_CACHE_FILENAME = "opl_art_luden02_cache_v6.txt"
     }
 
     private val client = OkHttpClient.Builder()
-        // Reduced timeouts so direct fallbacks fail instantly without hanging
+        // Fast timeouts so direct fallbacks fail instantly without hanging the app
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.SECONDS)
         .callTimeout(15, TimeUnit.SECONDS)
@@ -124,7 +125,7 @@ class CoverArtFetcher(private val context: Context) {
             }
 
             var paths: List<String> = emptyList()
-            val completed = withTimeoutOrNull(30_000) {
+            val completed = withTimeoutOrNull(20_000) {
                 var text = ""
                 var succeeded = false
                 try {
@@ -231,21 +232,24 @@ class CoverArtFetcher(private val context: Context) {
             }
         }
 
-        // 2. Fast Direct Fallback targeting the PS2/ folder explicitly
-        if (type != ArtType.COVER) {
-            val stdId = getGameIdVariations(gameId).firstOrNull { it.contains('_') && it.contains('.') } ?: gameId.uppercase()
-            
-            // Allow checking for _BG.1 if _BG fails, along with standard extensions
-            val suffixes = if (type == ArtType.BACKGROUND) listOf(type.oplSuffix, "_BG.1") else listOf(type.oplSuffix)
-            val exts = listOf("jpg", "png")
-            
-            for (suffix in suffixes) {
-                for (ext in exts) {
-                    val directUrl = "${ART_DB_RAW_BASE}PS2/${stdId}$suffix.$ext"
-                    val bytes = downloadBytes(directUrl)
-                    if (bytes != null) {
-                        return@withContext normalizeAndSave(bytes, cached, resizeForCover = false)
-                    }
+        // 2. Direct Fallback targeting the exact nested folder (e.g. PS2/SLUS_212.42/)
+        val stdId = getGameIdVariations(gameId).firstOrNull { it.contains('_') && it.contains('.') } ?: gameId.uppercase()
+        
+        val suffixes = when (type) {
+            ArtType.BACKGROUND -> listOf("_BG", "_BG.1")
+            ArtType.ICON -> listOf("_ICO", "_ICO.1")
+            ArtType.COVER -> listOf("_COV", "_COV.1")
+            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR.1")
+        }
+        val exts = listOf("jpg", "png", "jpeg")
+        
+        for (suffix in suffixes) {
+            for (ext in exts) {
+                // Correct path: /main/PS2/SLUS_212.42/SLUS_212.42_BG.jpg
+                val directUrl = "${ART_DB_RAW_BASE}PS2/${stdId}/${stdId}$suffix.$ext"
+                val bytes = downloadBytes(directUrl)
+                if (bytes != null) {
+                    return@withContext normalizeAndSave(bytes, cached, resizeForCover = type == ArtType.COVER)
                 }
             }
         }
