@@ -1,301 +1,126 @@
-package com.ps2manager.app.data
-
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import java.io.ByteArrayOutputStream
 import java.io.File
-import java.util.concurrent.TimeUnit
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.regex.Pattern
 
-/** The set of art types OPL itself displays per game. */
-enum class ArtType(val oplSuffix: String, val defaultExt: String) {
-    COVER("_COV", "png"),
-    BACKGROUND("_BG", "png"),
-    ICON("_ICO", "png"),
-    SCREENSHOT("_SCR", "png")
-}
+object CoverArtFetcher {
 
-/** Local paths to whichever art types were successfully found for one game. */
-data class ArtSet(
-    val cover: String? = null,
-    val background: String? = null,
-    val icon: String? = null,
-    val screenshot: String? = null
-) {
-    fun pathFor(type: ArtType): String? = when (type) {
-        ArtType.COVER -> cover
-        ArtType.BACKGROUND -> background
-        ArtType.ICON -> icon
-        ArtType.SCREENSHOT -> screenshot
-    }
-}
+    private const val REPO_TREE_API = "https://api.github.com/repos/Luden02/psx-ps2-opl-art-database/git/trees/main?recursive=1"
+    private const val RAW_BASE_URL = "https://raw.githubusercontent.com/Luden02/psx-ps2-opl-art-database/main/"
 
-/**
- * Art comes from Luden02/psx-ps2-opl-art-database and lunac/ps2-art repositories.
- *
- * IMPORTANT — real OPL (rev 2159+, Oct 2024 onward) dropped JPG/BMP support
- * entirely and only accepts PNG, lowercase extension. Every image this class
- * produces is guaranteed to be a real PNG regardless of what format the
- * source actually returned.
- */
-class CoverArtFetcher(private val context: Context) {
+    @Volatile
+    private var pathIndex: List<String>? = null
 
-    companion object {
-        private const val COVER_WIDTH = 140
-        private const val COVER_HEIGHT = 200
-
-        private const val ART_DB_TREE_API =
-            "https://api.github.com/repos/Luden02/psx-ps2-opl-art-database/git/trees/main?recursive=1"
-        private const val ART_DB_RAW_BASE =
-            "https://raw.githubusercontent.com/Luden02/psx-ps2-opl-art-database/main/"
-
-        private const val BACKUP_COVER_BASE =
-            "https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/"
-        private const val INDEX_CACHE_FILENAME = "ps2_art_index_cache.txt"
-    }
-
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .callTimeout(25, TimeUnit.SECONDS)
-        .build()
-
-    private val artDir = File(context.filesDir, "cover_art").apply { mkdirs() }
-
-    private var pathIndex: List<String> = emptyList()
-    private var indexLoaded = false
-
-    var lastError: String? = null
-        private set
-
-    /** Converts normalized "SLUS_212.42" into "SLUS-21242" format. */
-    private fun toSerialFormat(gameId: String): String {
-        val prefix = gameId.takeWhile { it.isLetter() }
-        val digits = gameId.dropWhile { it.isLetter() }.filter { it.isDigit() }
-        return "$prefix-$digits"
-    }
-
-    /** Fast manual scan for "path":"..." entries in the raw JSON. */
-    private fun extractPathsFast(json: String): List<String> {
-        val paths = mutableListOf<String>()
-        val marker = "\"path\":\""
-        var idx = json.indexOf(marker)
-        while (idx != -1) {
-            val start = idx + marker.length
-            val end = json.indexOf('"', start)
-            if (end == -1) break
-            paths.add(json.substring(start, end))
-            idx = json.indexOf(marker, end)
-        }
-        return paths
-    }
-
-    private suspend fun ensureIndexLoaded() {
-        if (indexLoaded) return
-        withContext(Dispatchers.IO) {
-            val cacheFile = File(context.filesDir, INDEX_CACHE_FILENAME)
-            var paths: List<String> = emptyList()
-
-            val completed = withTimeoutOrNull(30_000) {
-                var text = ""
-                var succeeded = false
-                try {
-                    val request = Request.Builder()
-                        .url(ART_DB_TREE_API)
-                        .addHeader("User-Agent", "PS2Manager-Android-App")
-                        .addHeader("Accept", "application/vnd.github+json")
-                        .build()
-                    client.newCall(request).execute().use { resp ->
-                        if (resp.isSuccessful) {
-                            val body = resp.body?.string().orEmpty()
-                            if (body.isNotBlank()) {
-                                text = body
-                                succeeded = true
-                            }
-                        } else {
-                            lastError = "Art database API returned ${resp.code}"
-                        }
-                    }
-                } catch (e: Exception) {
-                    lastError = e.message
-                }
-
-                if (succeeded) {
-                    paths = extractPathsFast(text)
-                }
-            }
-
-            if (completed == null) {
-                lastError = "Timed out reaching/parsing the art database (connection may be too slow)."
-            }
-
-            if (paths.isNotEmpty()) {
-                cacheFile.writeText(paths.joinToString("\n"))
-                pathIndex = paths
-            } else if (cacheFile.exists()) {
-                pathIndex = cacheFile.readText().lineSequence().filter { it.isNotBlank() }.toList()
-            } else {
-                pathIndex = emptyList()
-                lastError = lastError ?: "Could not reach the art database."
-            }
-            indexLoaded = true
+    /**
+     * Normalizes Game IDs like "SLUS-20001" or "SLUS20001" into standard OPL format "SLUS_200.01".
+     */
+    fun normalizeGameId(rawId: String): String {
+        val clean = rawId.uppercase().replace("[^A-Z0-9]".toRegex(), "")
+        return if (clean.length == 9) {
+            "${clean.substring(0, 4)}_${clean.substring(4, 7)}.${clean.substring(7)}"
+        } else {
+            rawId.uppercase()
         }
     }
 
     /**
-     * Searches the index for matching art paths across multiple ID variations,
-     * suffixes (_BG, _BG.1, _ICO, _ICO.1), and extensions (.png, .jpg, .jpeg).
+     * Loads the repository tree index into memory and caches it locally.
      */
-    private fun findExactPath(gameId: String, type: ArtType): String? {
-        val serial = toSerialFormat(gameId)
-        val noDot = gameId.replace(".", "")
-        val idVariations = listOf(gameId, serial, noDot).map { it.uppercase() }.distinct()
+    suspend fun ensureIndexLoaded(cacheDir: File): Boolean = withContext(Dispatchers.IO) {
+        if (pathIndex != null) return@withContext true
 
-        val suffixes = when (type) {
-            ArtType.BACKGROUND -> listOf("_BG", "_BG.1")
-            ArtType.ICON -> listOf("_ICO", "_ICO.1")
-            ArtType.COVER -> listOf("_COV", "_COV.1")
-            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR.1")
-        }.map { it.uppercase() }
+        val cacheFile = File(cacheDir, "opl_art_repo_tree.txt")
+        if (cacheFile.exists() && cacheFile.length() > 0) {
+            pathIndex = cacheFile.readLines()
+            return@withContext true
+        }
 
-        val extensions = listOf(".PNG", ".JPG", ".JPEG")
+        try {
+            val url = URL(REPO_TREE_API)
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 10000
+                readTimeout = 10000
+                setRequestProperty("User-Agent", "OPL-Art-Fetcher-App")
+            }
 
-        val candidateNames = HashSet<String>()
-        for (id in idVariations) {
-            for (suffix in suffixes) {
-                for (ext in extensions) {
-                    candidateNames.add("$id$suffix$ext")
+            if (connection.responseCode == 200) {
+                val json = connection.inputStream.bufferedReader().use { it.readText() }
+                val matcher = Pattern.compile("\"path\":\\s*\"([^\"]+)\"").matcher(json)
+                val paths = mutableListOf<String>()
+
+                while (matcher.find()) {
+                    paths.add(matcher.group(1))
+                }
+
+                if (paths.isNotEmpty()) {
+                    cacheFile.writeText(paths.joinToString("\n"))
+                    pathIndex = paths
+                    return@withContext true
                 }
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
 
-        return pathIndex.firstOrNull { path ->
-            val filename = path.substringAfterLast('/').uppercase()
-            candidateNames.contains(filename)
-        }
+        return@withContext false
     }
 
-    /** Fetches all four art types for a game. */
-    suspend fun fetchAllArt(
+    /**
+     * Fetches raw bytes for artwork. Tries the indexed path first, then falls back to direct raw URLs.
+     */
+    suspend fun fetchArtBytes(
         gameId: String,
-        onProgress: (label: String, fileName: String, step: Int, total: Int) -> Unit = { _, _, _, _ -> }
-    ): ArtSet = withContext(Dispatchers.IO) {
-        ensureIndexLoaded()
+        artSuffix: String, // e.g., "_COV", "_ICO", "_BG", "_SCR"
+        cacheDir: File
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        val normalizedId = normalizeGameId(gameId)
+        ensureIndexLoaded(cacheDir)
 
-        onProgress("Cover", "$gameId${ArtType.COVER.oplSuffix}.png", 1, 4)
-        val cover = fetchArt(gameId, ArtType.COVER)
-
-        onProgress("Icon", "$gameId${ArtType.ICON.oplSuffix}.png", 2, 4)
-        val icon = fetchArt(gameId, ArtType.ICON)
-
-        onProgress("Screenshot", "$gameId${ArtType.SCREENSHOT.oplSuffix}.png", 3, 4)
-        val screenshot = fetchArt(gameId, ArtType.SCREENSHOT)
-
-        onProgress("Background", "$gameId${ArtType.BACKGROUND.oplSuffix}.png", 4, 4)
-        val background = fetchArt(gameId, ArtType.BACKGROUND)
-
-        ArtSet(cover = cover, background = background, icon = icon, screenshot = screenshot)
-    }
-
-    /** Kept for backward compatibility: fetches just the front cover. */
-    suspend fun fetchCoverArt(gameId: String): String? = fetchArt(gameId, ArtType.COVER)
-
-    suspend fun fetchArt(gameId: String, type: ArtType): String? = withContext(Dispatchers.IO) {
-        val cached = File(artDir, "$gameId${type.oplSuffix}.png")
-        if (cached.exists()) return@withContext cached.absolutePath
-
-        // 1. Attempt direct fetching from Lunac repo for _BG and _ICO files
-        if (type == ArtType.BACKGROUND || type == ArtType.ICON) {
-            val serial = toSerialFormat(gameId)
-            val noDot = gameId.replace(".", "")
-            val idVariations = listOf(gameId, serial, noDot).distinct()
-            val suffixes = if (type == ArtType.BACKGROUND) listOf("_BG", "_BG.1") else listOf("_ICO", "_ICO.1")
-            val extensions = listOf("png", "jpg", "jpeg")
-            val branches = listOf("main", "master")
-
-            for (branch in branches) {
-                val baseUrl = "https://raw.githubusercontent.com/lunac/ps2-art/$branch/"
-                for (id in idVariations) {
-                    for (suffix in suffixes) {
-                        for (ext in extensions) {
-                            val name = "$id$suffix.$ext"
-                            val candidatePaths = listOf(name, "Art/$name", "art/$name", "ART/$name")
-                            for (relativePath in candidatePaths) {
-                                val bytes = downloadBytes("$baseUrl$relativePath")
-                                if (bytes != null) {
-                                    return@withContext normalizeAndSave(bytes, cached, resizeForCover = false)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        // 1. Try matching against the indexed Git Tree
+        val matchedPath = pathIndex?.firstOrNull { path ->
+            val fileName = path.substringAfterLast("/")
+            fileName.equals("${normalizedId}${artSuffix}.png", ignoreCase = true) ||
+            fileName.equals("${normalizedId}${artSuffix}.jpg", ignoreCase = true)
         }
 
-        // 2. Try primary database index (Luden02 repository)
-        ensureIndexLoaded()
-        val matchedPath = findExactPath(gameId, type)
         if (matchedPath != null) {
-            val bytes = downloadBytes(ART_DB_RAW_BASE + matchedPath)
-            if (bytes != null) {
-                return@withContext normalizeAndSave(bytes, cached, resizeForCover = type == ArtType.COVER)
-            }
+            val downloadUrl = RAW_BASE_URL + matchedPath
+            val bytes = downloadBytes(downloadUrl)
+            if (bytes != null) return@withContext bytes
         }
 
-        // 3. Fallback for front cover only
-        if (type == ArtType.COVER) {
-            val serial = toSerialFormat(gameId)
-            val bytes = downloadBytes("$BACKUP_COVER_BASE$serial.jpg")
-            if (bytes != null) {
-                return@withContext normalizeAndSave(bytes, cached, resizeForCover = true)
-            }
+        // 2. Direct Fallback if GitHub API failed or file was omitted from tree
+        val fallbackPaths = listOf(
+            "PS2/${normalizedId}${artSuffix}.png",
+            "PS1/${normalizedId}${artSuffix}.png",
+            "${normalizedId}${artSuffix}.png"
+        )
+
+        for (relativePath in fallbackPaths) {
+            val bytes = downloadBytes(RAW_BASE_URL + relativePath)
+            if (bytes != null) return@withContext bytes
         }
 
-        null
+        return@withContext null
     }
 
-    private fun downloadBytes(url: String): ByteArray? {
+    private fun downloadBytes(urlString: String): ByteArray? {
         return try {
-            val request = Request.Builder().url(url).build()
-            client.newCall(request).execute().use { resp ->
-                if (resp.isSuccessful) {
-                    val bytes = resp.body?.bytes()
-                    if (bytes != null && bytes.isNotEmpty()) bytes else null
-                } else null
+            val connection = (URL(urlString).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 8000
+                readTimeout = 8000
+                instanceFollowRedirects = true
+            }
+            if (connection.responseCode == 200) {
+                connection.inputStream.use { it.readBytes() }
+            } else {
+                null
             }
         } catch (e: Exception) {
             null
         }
     }
-
-    /**
-     * Decodes whatever format was downloaded and re-encodes it as a PNG file.
-     */
-    private fun normalizeAndSave(sourceBytes: ByteArray, destFile: File, resizeForCover: Boolean = false): String? {
-        var bitmap = BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size) ?: return null
-
-        if (resizeForCover && (bitmap.width != COVER_WIDTH || bitmap.height != COVER_HEIGHT)) {
-            val resized = Bitmap.createScaledBitmap(bitmap, COVER_WIDTH, COVER_HEIGHT, true)
-            if (resized !== bitmap) bitmap.recycle()
-            bitmap = resized
-        }
-
-        val out = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-        bitmap.recycle()
-        destFile.writeBytes(out.toByteArray())
-        return destFile.absolutePath
-    }
-
-    /** Copies a user-picked image in as art, normalized to PNG regardless of format. */
-    suspend fun saveManualArt(gameId: String, type: ArtType, sourceBytes: ByteArray, ext: String): String? =
-        withContext(Dispatchers.IO) {
-            val file = File(artDir, "$gameId${type.oplSuffix}.png")
-            normalizeAndSave(sourceBytes, file, resizeForCover = type == ArtType.COVER)
-        }
 }
