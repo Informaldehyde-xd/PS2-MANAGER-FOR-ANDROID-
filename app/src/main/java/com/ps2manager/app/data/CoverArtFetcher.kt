@@ -36,8 +36,8 @@ data class ArtSet(
 }
 
 /**
- * CoverArtFetcher fetches game artwork (_COV, _BG, _ICO, _SCR) directly from
- * Luden02/psx-ps2-opl-art-database using a fast, cached tree index lookup.
+ * CoverArtFetcher fetches game artwork directly from Luden02/psx-ps2-opl-art-database 
+ * using a fast, cached tree index lookup.
  *
  * IMPORTANT — real OPL (rev 2159+, Oct 2024 onward) dropped JPG/BMP support
  * entirely and only accepts PNG, lowercase extension. Every image this class
@@ -74,14 +74,17 @@ class CoverArtFetcher(private val context: Context) {
     var lastError: String? = null
         private set
 
-    /** Generates all common Game ID serial variations to prevent misses. */
+    /** 
+     * Guarantees we can match the database files even if the app's Game ID 
+     * is formatted slightly differently (e.g., SLUS_21242 vs SLUS_212.42).
+     */
     private fun getGameIdVariations(gameId: String): List<String> {
-        val clean = gameId.uppercase().trim()
+        val clean = gameId.uppercase().replace("[^A-Z0-9]".toRegex(), "")
         val prefix = clean.takeWhile { it.isLetter() }
-        val digits = clean.dropWhile { it.isLetter() }.filter { it.isDigit() }
+        val digits = clean.dropWhile { it.isLetter() }
 
         if (prefix.isEmpty() || digits.length < 4) {
-            return listOf(clean)
+            return listOf(gameId.uppercase())
         }
 
         val formattedDigits = if (digits.length >= 5) {
@@ -89,12 +92,10 @@ class CoverArtFetcher(private val context: Context) {
         } else digits
 
         return listOf(
-            clean,
-            "$prefix-$digits",               // SLUS-21242
-            "${prefix}_$digits",             // SLUS_21242
-            "${prefix}_$formattedDigits",    // SLUS_212.42
-            "$prefix-$formattedDigits",      // SLUS-212.42
-            "$prefix$digits"                 // SLUS21242
+            gameId.uppercase(),
+            "${prefix}_$formattedDigits",    // OPL Standard: SLUS_212.42
+            "$prefix-$digits",               // Serial: SLUS-21242
+            "${prefix}_$digits"              // No-dot: SLUS_21242
         ).distinct()
     }
 
@@ -113,7 +114,7 @@ class CoverArtFetcher(private val context: Context) {
         return paths
     }
 
-    /** Safely loads the index into memory, caching to disk to prevent Github Rate Limiting. */
+    /** Safely loads the index into memory, caching to disk to prevent hangs & limits. */
     private suspend fun ensureIndexLoaded() {
         if (indexLoaded && pathIndex.isNotEmpty()) return
         withContext(Dispatchers.IO) {
@@ -173,18 +174,20 @@ class CoverArtFetcher(private val context: Context) {
         }
     }
 
-    /** Matches game ID variations and suffixes against the in-memory tree index. */
+    /** Matches game ID variations and strict suffixes against the in-memory tree index. */
     private fun findExactPath(gameId: String, type: ArtType): String? {
         val idVariations = getGameIdVariations(gameId)
 
+        // STRICT SUFFIXES: As requested, Backgrounds will ONLY search for _BG or _BG.1
         val suffixes = when (type) {
-            ArtType.BACKGROUND -> listOf("_BG", "_BG.1", "_BG.2", "_SCR", "_SCR.1")
-            ArtType.ICON -> listOf("_ICO", "_ICO.1", "_ICO.2")
-            ArtType.COVER -> listOf("_COV", "_COV.1", "_COV2")
-            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR.1", "_SCR.2")
+            ArtType.BACKGROUND -> listOf("_BG", "_BG.1")
+            ArtType.ICON -> listOf("_ICO", "_ICO.1")
+            ArtType.COVER -> listOf("_COV", "_COV.1")
+            ArtType.SCREENSHOT -> listOf("_SCR", "_SCR.1")
         }
 
-        val extensions = listOf(".PNG", ".JPG", ".JPEG", ".BMP")
+        // Account for standard image extensions in the Luden02 database
+        val extensions = listOf(".PNG", ".JPG", ".JPEG")
 
         val targetFilenames = HashSet<String>()
         for (id in idVariations) {
@@ -195,6 +198,7 @@ class CoverArtFetcher(private val context: Context) {
             }
         }
 
+        // Search the cached index
         return pathIndex.firstOrNull { path ->
             val filename = path.substringAfterLast('/').uppercase()
             targetFilenames.contains(filename)
@@ -231,7 +235,7 @@ class CoverArtFetcher(private val context: Context) {
 
         ensureIndexLoaded()
 
-        // Fast in-memory lookup against the GitHub database tree index
+        // 1. Fast in-memory lookup against the GitHub database tree index
         val matchedPath = findExactPath(gameId, type)
         if (matchedPath != null) {
             val bytes = downloadBytes(ART_DB_RAW_BASE + matchedPath)
@@ -240,7 +244,7 @@ class CoverArtFetcher(private val context: Context) {
             }
         }
 
-        // Fallback for front cover only from backup repo
+        // 2. Fallback for front cover only from backup repo
         if (type == ArtType.COVER) {
             val serial = getGameIdVariations(gameId).firstOrNull { it.contains('-') } ?: gameId
             val bytes = downloadBytes("$BACKUP_COVER_BASE$serial.jpg")
