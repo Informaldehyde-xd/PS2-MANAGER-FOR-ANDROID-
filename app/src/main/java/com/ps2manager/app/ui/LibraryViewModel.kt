@@ -104,10 +104,8 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 repository.renameUlGame(treeUri, gameId, title)
             } else {
                 val extension = game.displayName.substringAfterLast('.', "iso")
-                repository.renameFile(game.documentId, gameId, title, extension, game.parentDocumentId) { copied, total ->
-                    val pct = if (total > 0) (copied * 100 / total) else 0
-                    _artFetchProgress.value = "Renaming (copying — this drive doesn't support fast rename): $pct% (${copied / 1_000_000}MB / ${total / 1_000_000}MB)"
-                }
+                // Simplified rename without progress tracking
+                repository.renameFile(game.documentId, gameId, title, extension)
             }
             _artFetchProgress.value = null
 
@@ -210,10 +208,8 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 repository.renameUlGame(treeUri, gameId, title)
             } else {
                 val extension = game.displayName.substringAfterLast('.', "iso")
-                repository.renameFile(game.documentId, gameId, title, extension, game.parentDocumentId) { copied, total ->
-                    val pct = if (total > 0) (copied * 100 / total) else 0
-                    _artFetchProgress.value = "${game.matchedTitle ?: gameId}: renaming (copying — this drive doesn't support fast rename): $pct% (${copied / 1_000_000}MB / ${total / 1_000_000}MB)"
-                }
+                // Simplified rename without progress tracking
+                repository.renameFile(game.documentId, gameId, title, extension)
             }
             _artFetchProgress.value = null
 
