@@ -7,6 +7,7 @@ import com.ps2manager.app.util.GameIdUtil
 import com.ps2manager.app.util.IsoSystemCnfReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 private val GAME_EXTENSIONS = setOf("iso")
@@ -168,90 +169,49 @@ class GameRepository(private val context: Context) {
 
     /**
      * Renames a file on the drive to OPL's GameID.Title.ext convention. Returns (success, errorMessage).
-     *
-     * Some USB/HDD storage providers (notably many FAT32/exFAT SAF providers) don't support the
-     * rename operation at all and throw UnsupportedOperationException from DocumentsContract.
-     * When that happens, fall back to copying the file to a new name in the same folder and
-     * deleting the original, which works everywhere since it only needs create+write+delete.
-     * Since ISOs can be multiple GB, onCopyProgress reports bytes copied so the UI isn't silent.
+     * Uses a simple rename logic via DocumentFile.renameTo() with a strict timeout to prevent SAF hangs.
      */
     suspend fun renameFile(
         documentUriString: String,
         gameId: String,
         title: String,
-        extension: String,
-        parentDocumentId: String? = null,
-        onCopyProgress: (bytesCopied: Long, totalBytes: Long) -> Unit = { _, _ -> }
+        extension: String
     ): Pair<Boolean, String?> =
         withContext(Dispatchers.IO) {
             try {
                 val doc = DocumentFile.fromSingleUri(context, Uri.parse(documentUriString))
                     ?: return@withContext false to "Could not access the file (permission may have been lost — try re-picking the folder)."
+                
                 if (!doc.exists()) {
                     return@withContext false to "File no longer exists at that location."
                 }
+                
                 val newName = GameIdUtil.buildOplFilename(gameId, title, extension)
 
-                // Resolve the parent up front (if we have it) so we can clear any pre-existing
-                // file at the target name before renaming. Some storage providers silently
-                // disambiguate a taken name by appending " (1)" instead of failing the rename,
-                // which would otherwise go unnoticed since renameTo() still returns true.
-                val parent = parentDocumentId?.let { DocumentFile.fromTreeUri(context, Uri.parse(it)) }
-                parent?.findFile(newName)?.let { existing ->
-                    if (existing.uri != doc.uri) existing.delete()
+                // Skip if already correctly named
+                if (doc.name == newName) {
+                    return@withContext true to null
                 }
 
-                val renamedDirectly = try {
-                    doc.renameTo(newName)
+                // Attempt a direct rename with a 5-second timeout
+                // Renaming metadata should be instant. If it takes >5s, SAF is hanging.
+                val renamed = try {
+                    withTimeoutOrNull(5000L) {
+                        doc.renameTo(newName)
+                    } ?: false // Returns false if it times out and resolves to null
                 } catch (e: UnsupportedOperationException) {
                     false
                 }
-                if (renamedDirectly) {
-                    return@withContext if (doc.name == newName) {
-                        true to null
+
+                if (renamed) {
+                    if (doc.name == newName) {
+                        return@withContext true to null
                     } else {
-                        false to "Renamed to '${doc.name}' instead of '$newName' — this drive's storage provider renamed around a naming conflict. The conflicting file has now been removed; try again."
+                        return@withContext false to "Renamed to '${doc.name}' instead of '$newName'. A naming conflict might exist on this drive."
                     }
+                } else {
+                    return@withContext false to "The storage provider doesn't support renaming, or the operation timed out/failed."
                 }
-
-                // Direct rename isn't supported by this storage provider — fall back to copy + delete.
-                if (parentDocumentId == null) {
-                    return@withContext false to "This drive's storage provider doesn't support renaming, and no folder reference was available for a copy-based rename."
-                }
-                if (parent == null) {
-                    return@withContext false to "Could not access the containing folder (try re-picking the folder)."
-                }
-
-                parent.findFile(newName)?.let { existing ->
-                    if (existing.uri != doc.uri) existing.delete()
-                }
-                val mime = doc.type ?: "application/octet-stream"
-                val newFile = parent.createFile(mime, newName)
-                    ?: return@withContext false to "Could not create the renamed file in the containing folder."
-                if (newFile.name != newName) {
-                    return@withContext false to "Created file as '${newFile.name}' instead of '$newName' — a naming conflict remains on this drive."
-                }
-
-                val totalBytes = doc.length()
-                var copiedBytes = 0L
-
-                context.contentResolver.openInputStream(doc.uri)?.use { input ->
-                    context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
-                        val buffer = ByteArray(1 shl 20) // 1 MB buffer — the default 8 KB is very slow over USB/SAF
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read == -1) break
-                            output.write(buffer, 0, read)
-                            copiedBytes += read
-                            onCopyProgress(copiedBytes, totalBytes)
-                        }
-                    } ?: return@withContext false to "Could not write the new file."
-                } ?: return@withContext false to "Could not read the original file to copy it."
-
-                if (!doc.delete()) {
-                    return@withContext false to "Copied to the new name, but couldn't delete the original — you may have a duplicate now."
-                }
-                true to null
             } catch (e: Exception) {
                 false to (e.message ?: e.javaClass.simpleName)
             }
