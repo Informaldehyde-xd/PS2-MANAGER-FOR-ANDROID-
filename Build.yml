@@ -1,0 +1,63 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Install NDK / CMake
+        run: sdkmanager --install "ndk;26.3.11579264" "cmake;3.22.1"
+
+      # Vendors the native BIN/CUE -> VCD converter sources so CMake has
+      # something to compile. Without this, libcue2pops.so never gets built
+      # and the "Convert to VCD (POPS)" feature has nothing to shell out to.
+      - name: Vendor cue2pops source (genuine v2.0)
+        run: |
+          rm -rf app/src/main/cpp/cue2pops
+          git clone --depth 1 https://github.com/israpps/cue2pops app/src/main/cpp/cue2pops
+
+      - name: Build debug APK
+        run: gradle assembleDebug --stacktrace
+
+      - name: Debug native library packaging
+        if: always()
+        run: |
+          echo "=== app/src/main/jniLibs after native build ==="
+          find app/src/main/jniLibs -type f 2>/dev/null || echo "(jniLibs folder doesn't exist)"
+          echo ""
+          echo "=== Raw CMake/ninja output folders (any ABI) ==="
+          find app/build/intermediates/cxx -name "lib*.so" 2>/dev/null || echo "(none found)"
+          echo ""
+          echo "=== Contents of the built APK's lib/ folder ==="
+          mkdir -p /tmp/apk_check
+          APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
+          if [ -n "$APK" ]; then
+            unzip -o "$APK" -d /tmp/apk_check > /dev/null
+            find /tmp/apk_check/lib -type f 2>/dev/null || echo "(no lib/ folder in APK at all)"
+          else
+            echo "(no APK found — build must have failed)"
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PS2Manager-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
