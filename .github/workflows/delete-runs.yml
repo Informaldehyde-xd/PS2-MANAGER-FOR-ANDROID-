@@ -10,21 +10,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          # Verify authentication
           USER_NAME=$(gh api user -q '.login')
           echo "Authenticated as user: $USER_NAME"
 
-          # Fetch repos explicitly for the user
-          REPOS=$(gh repo list "$USER_NAME" --limit 1000 --json fullName -q '.[].fullName')
-          echo "Found repositories: $REPOS"
+          # Use nameWithOwner instead of fullName
+          REPOS=$(gh repo list "$USER_NAME" --limit 1000 --json nameWithOwner -q '.[].nameWithOwner')
 
           for repo in $REPOS; do
             echo "Processing repository: $repo"
-            RUNS=$(gh api --paginate "repos/$repo/actions/runs" --jq '.workflow_runs[].id')
-            
+            RUNS=$(gh api --paginate "repos/$repo/actions/runs" --jq '.workflow_runs[].id' || true)
+
             for run in $RUNS; do
               echo "Deleting run ID $run in $repo..."
-              gh api -X DELETE "repos/$repo/actions/runs/$run"
+              gh api -X DELETE "repos/$repo/actions/runs/$run" || true
             done
           done
           
