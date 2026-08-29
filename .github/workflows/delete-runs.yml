@@ -1,0 +1,19 @@
+name: Bulk Delete Workflow Runs
+on:
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete all workflow runs across user repos
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          for repo in $(gh repo list --limit 1000 --json fullName -q '.[].fullName'); do
+            echo "Processing $repo..."
+            for run in $(gh api --paginate "repos/$repo/actions/runs" --jq '.workflow_runs[].id'); do
+              gh api -X DELETE "repos/$repo/actions/runs/$run" >/dev/null || true
+            done
+          done
+          
