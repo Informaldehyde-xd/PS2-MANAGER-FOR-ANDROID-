@@ -6,14 +6,25 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete all workflow runs across user repos
+      - name: Delete workflow runs
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          for repo in $(gh repo list --limit 1000 --json fullName -q '.[].fullName'); do
-            echo "Processing $repo..."
-            for run in $(gh api --paginate "repos/$repo/actions/runs" --jq '.workflow_runs[].id'); do
-              gh api -X DELETE "repos/$repo/actions/runs/$run" >/dev/null || true
+          # Verify authentication
+          USER_NAME=$(gh api user -q '.login')
+          echo "Authenticated as user: $USER_NAME"
+
+          # Fetch repos explicitly for the user
+          REPOS=$(gh repo list "$USER_NAME" --limit 1000 --json fullName -q '.[].fullName')
+          echo "Found repositories: $REPOS"
+
+          for repo in $REPOS; do
+            echo "Processing repository: $repo"
+            RUNS=$(gh api --paginate "repos/$repo/actions/runs" --jq '.workflow_runs[].id')
+            
+            for run in $RUNS; do
+              echo "Deleting run ID $run in $repo..."
+              gh api -X DELETE "repos/$repo/actions/runs/$run"
             done
           done
           
